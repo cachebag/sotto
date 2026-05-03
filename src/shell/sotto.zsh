@@ -1,13 +1,23 @@
+_sotto_accepted=0
+
 _sotto_ghost() {
-    # only trigger when the buffer matches `git commit -m '...'`
-    # we should consider other instances like `am`
+    # reset accepted flag when user starts a new command
     if [[ "$BUFFER" != git\ commit\ -m\ \'* && "$BUFFER" != git\ commit\ -m\ \"* ]]; then
         POSTDISPLAY=""
+        region_highlight=()
+        _sotto_accepted=0
         return
     fi
 
-    # extract what's already typed inside the quotes
-    local typed="${BUFFER##git commit -m [\'\"]*}"
+    # don't show ghost text after it's been accepted
+    if (( _sotto_accepted )); then
+        POSTDISPLAY=""
+        region_highlight=()
+        return
+    fi
+
+    # clear zsh-autosuggestions so we take priority
+    zle autosuggest-clear 2>/dev/null || true
 
     # get sotto's suggestion
     local suggestion
@@ -15,22 +25,29 @@ _sotto_ghost() {
 
     if [[ -z "$suggestion" ]]; then
         POSTDISPLAY=""
+        region_highlight=()
         return
     fi
 
-    # only show the part they haven't typed yet
-    if [[ "$suggestion" == "$typed"* ]]; then
-        POSTDISPLAY="${suggestion#$typed}"
-    else
-        POSTDISPLAY="$suggestion"
-    fi
+    POSTDISPLAY="$suggestion"
+
+    # style the ghost text grey
+    local start=${#BUFFER}
+    local end=$(( start + ${#POSTDISPLAY} ))
+    region_highlight=("$start $end fg=8")
 }
 
 _sotto_accept() {
     if [[ -n "$POSTDISPLAY" ]]; then
-        BUFFER="${BUFFER}${POSTDISPLAY}"
+        # extract quote character and rebuild buffer cleanly
+        local quote="${BUFFER##git commit -m }"
+        local quote_char="${quote:0:1}"
+
+        BUFFER="git commit -m ${quote_char}${POSTDISPLAY}${quote_char}"
         CURSOR=${#BUFFER}
         POSTDISPLAY=""
+        region_highlight=()
+        _sotto_accepted=1
     else
         zle expand-or-complete  # default Tab behavior
     fi

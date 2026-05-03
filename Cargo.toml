@@ -3,8 +3,10 @@ name = "sotto"
 version = "0.1.0"
 edition = "2024"
 
+# testing soemthings
 [dependencies]
 anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
 dialoguer = "0.12.0"
 dirs = "6.0.0"
 git2 = "0.20.4"
