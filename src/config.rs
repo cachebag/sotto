@@ -52,6 +52,7 @@ pub struct Paths {
 #[derive(Debug, Deserialize)]
 pub struct SottoConfig {
     pub api_key: String,
+    pub endpoint: String,
 
     #[serde(default = "defaults::model")]
     pub model: String,
@@ -81,6 +82,9 @@ impl SottoConfig {
 }
 
 mod defaults {
+    pub fn endpoint() -> String {
+        "https://openrouter.ai/api/v1/chat/completions".to_string()
+    }
     pub fn model() -> String {
         "nothing".to_string()
     }
