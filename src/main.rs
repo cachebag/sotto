@@ -1,7 +1,8 @@
 mod build;
 mod config;
+mod ipc;
 mod setup;
-pub mod shell;
+mod shell;
 
 use anyhow::Result;
 use config::Paths;

@@ -61,9 +61,8 @@ pub struct SottoConfig {
 
     #[serde(default = "defaults::max_diff_lines")]
     pub max_diff_lines: usize,
-
-    #[serde(default = "defaults::line_delta_threshold")]
-    pub line_delta_threshold: usize,
+    // #[serde(default = "defaults::line_delta_threshold")]
+    // pub line_delta_threshold: usize,
 }
 
 impl SottoConfig {
@@ -91,7 +90,9 @@ mod defaults {
     pub fn max_diff_lines() -> usize {
         500
     }
-    pub fn line_delta_threshold() -> usize {
-        10
-    }
+    // I don't know if this is needed right now
+    // But if token waste becomes an issue then it's worth it
+    // pub fn line_delta_threshold() -> usize {
+    //    10
+    // }
 }
