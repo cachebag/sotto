@@ -19,7 +19,8 @@ pub fn run(paths: &Paths) -> Result<()> {
 
     shell::inject(&shell, paths)?;
 
-    println!("\nyou are good to go and commit.");
+    println!("\nyou are good to go and commit, but first, restart your shell or run:");
+    println!("  source ~/.{}rc", shell);
     Ok(())
 }
 
