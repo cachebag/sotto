@@ -1,7 +1,7 @@
-// Configuration for sotto state 
+// Configuration for sotto state
 
 use anyhow::{Context, Result};
-use dirs::{data_local_dir, config_dir};
+use dirs::{config_dir, data_local_dir};
 use serde::Deserialize;
 use std::{fs, path::PathBuf};
 
@@ -16,14 +16,14 @@ impl Paths {
             .join("sotto");
 
         Ok(Self {
-            cache_dir: data_dir.join("cache"), 
+            cache_dir: data_dir.join("cache"),
             socket: data_dir.join("sotto.sock"),
             log: data_dir.join("sotto.log"),
             config: config_dir.join("config.toml"),
         })
     }
 
-    /// Ensure all directories exist 
+    /// Ensure all directories exist
     pub fn init_dirs(&self) -> Result<()> {
         let dirs = [
             self.cache_dir.as_path(),
@@ -52,7 +52,7 @@ pub struct Paths {
 #[derive(Debug, Deserialize)]
 pub struct SottoConfig {
     pub api_key: String,
-    
+
     #[serde(default = "defaults::model")]
     pub model: String,
 
@@ -70,11 +70,9 @@ impl SottoConfig {
     /// Only call this from `setup` or `doctor`
     /// Daemon and completer should use `load_silent` instead.
     pub fn load(paths: &Paths) -> Result<Self> {
-        let contents = fs::read_to_string(&paths.config)
-            .context("could not read config.toml")?;
+        let contents = fs::read_to_string(&paths.config).context("could not read config.toml")?;
 
-        toml::from_str(&contents)
-            .context("config.toml is malformed")
+        toml::from_str(&contents).context("config.toml is malformed")
     }
 
     pub fn load_silently(paths: &Paths) -> Option<Self> {
@@ -84,8 +82,16 @@ impl SottoConfig {
 }
 
 mod defaults {
-    pub fn model() -> String { "nothing".to_string() }
-    pub fn debounce_secs() -> u64 { 15 }
-    pub fn max_diff_lines() -> usize { 500 }
-    pub fn line_delta_threshold() -> usize { 10 }
+    pub fn model() -> String {
+        "nothing".to_string()
+    }
+    pub fn debounce_secs() -> u64 {
+        15
+    }
+    pub fn max_diff_lines() -> usize {
+        500
+    }
+    pub fn line_delta_threshold() -> usize {
+        10
+    }
 }

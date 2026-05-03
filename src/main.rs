@@ -1,5 +1,13 @@
+mod build;
 mod config;
+mod setup;
+pub mod shell;
 
-fn main() {
-    println!("Hello, world!");
+use anyhow::Result;
+use config::Paths;
+
+fn main() -> Result<()> {
+    let paths = Paths::resolve()?;
+    setup::run(&paths)?;
+    Ok(())
 }
