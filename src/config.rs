@@ -1,0 +1,91 @@
+// Configuration for sotto state 
+
+use anyhow::{Context, Result};
+use dirs::{data_local_dir, config_dir};
+use serde::Deserialize;
+use std::{fs, path::PathBuf};
+
+impl Paths {
+    pub fn resolve() -> Result<Self> {
+        let data_dir = data_local_dir()
+            .context("could not resolve data directory")?
+            .join("sotto");
+
+        let config_dir = config_dir()
+            .context("could not resolve config directory")?
+            .join("sotto");
+
+        Ok(Self {
+            cache_dir: data_dir.join("cache"), 
+            socket: data_dir.join("sotto.sock"),
+            log: data_dir.join("sotto.log"),
+            config: config_dir.join("config.toml"),
+        })
+    }
+
+    /// Ensure all directories exist 
+    pub fn init_dirs(&self) -> Result<()> {
+        let dirs = [
+            self.cache_dir.as_path(),
+            self.socket.parent().context("socket path has no parent")?,
+            self.log.parent().context("log path has no parent")?,
+            self.config.parent().context("config path has no parent")?,
+        ];
+
+        for dir in dirs {
+            fs::create_dir_all(dir)
+                .with_context(|| format!("failed to create dir: {}", dir.display()))?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub cache_dir: PathBuf,
+    pub socket: PathBuf,
+    pub log: PathBuf,
+    pub config: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SottoConfig {
+    pub api_key: String,
+    
+    #[serde(default = "defaults::model")]
+    pub model: String,
+
+    #[serde(default = "defaults::debounce_secs")]
+    pub debounce_secs: u64,
+
+    #[serde(default = "defaults::max_diff_lines")]
+    pub max_diff_lines: usize,
+
+    #[serde(default = "defaults::line_delta_threshold")]
+    pub line_delta_threshold: usize,
+}
+
+impl SottoConfig {
+    /// Only call this from `setup` or `doctor`
+    /// Daemon and completer should use `load_silent` instead.
+    pub fn load(paths: &Paths) -> Result<Self> {
+        let contents = fs::read_to_string(&paths.config)
+            .context("could not read config.toml")?;
+
+        toml::from_str(&contents)
+            .context("config.toml is malformed")
+    }
+
+    pub fn load_silently(paths: &Paths) -> Option<Self> {
+        let contents = fs::read_to_string(&paths.config).ok()?;
+        toml::from_str(&contents).ok()
+    }
+}
+
+mod defaults {
+    pub fn model() -> String { "nothing".to_string() }
+    pub fn debounce_secs() -> u64 { 15 }
+    pub fn max_diff_lines() -> usize { 500 }
+    pub fn line_delta_threshold() -> usize { 10 }
+}
