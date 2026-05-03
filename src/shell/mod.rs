@@ -1,3 +1,5 @@
+mod complete;
+
 use crate::config::Paths;
 use anyhow::Result;
 use std::path::Path;
