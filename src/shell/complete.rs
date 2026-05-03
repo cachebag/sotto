@@ -4,7 +4,6 @@ use sha2::{Digest, Sha256};
 use crate::config::Paths;
 use crate::daemon::cache;
 
-
 /// Called by the shell widget. Prints the cached message to stdout.
 /// Exists silently if anything fails. We don't event interrupt git.
 pub fn run(paths: &Paths) {
@@ -21,7 +20,11 @@ fn try_read(paths: &Paths) -> Option<String> {
 
     let mut hasher = Sha256::new();
     hasher.update(workdir.as_bytes());
-    let repo_id = hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    let repo_id = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
 
     let entry = cache::read(&paths.cache_dir, &repo_id)?;
     Some(entry.message)
