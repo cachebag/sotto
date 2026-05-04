@@ -35,11 +35,6 @@ struct ResponseMessage {
 // Some of this is quite crude. Obviously, we should eventually allow the user to
 // configure/customize how they like their commits.
 pub fn generate(config: &SottoConfig, diff: &str) -> Result<String> {
-    let system = "You are a concise git commit message generator. \
-        Given a diff, write a single-line commit message. \
-        Use conventional commit format (feat:, fix:, refactor:, etc). \
-        Return nothing but the commit message.";
-
     let user = format!("Generate a commit message for this diff:\n\n{diff}");
 
     let body = ChatRequest {
@@ -47,7 +42,7 @@ pub fn generate(config: &SottoConfig, diff: &str) -> Result<String> {
         messages: vec![
             Message {
                 role: "system".into(),
-                content: system.into(),
+                content: config.prompt.clone(),
             },
             Message {
                 role: "user".into(),

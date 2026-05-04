@@ -64,6 +64,8 @@ pub struct SottoConfig {
     pub max_diff_lines: usize,
     // #[serde(default = "defaults::line_delta_threshold")]
     // pub line_delta_threshold: usize,
+    #[serde(default = "defaults::prompt")]
+    pub prompt: String,
 }
 
 impl SottoConfig {
@@ -99,4 +101,12 @@ mod defaults {
     // pub fn line_delta_threshold() -> usize {
     //    10
     // }
+    pub fn prompt() -> String {
+        String::from(
+            "You are a concise git commit message generator. \
+            Given a diff, write a single-line commit message. \
+            Use conventional commit format (feat:, fix:, refactor:, etc). \
+            Return nothing but the commit message.",
+        )
+    }
 }

@@ -2,7 +2,6 @@ use anyhow::Result;
 use dialoguer::{Input, Password, Select};
 use std::env;
 
-
 pub fn provider() -> Result<Provider> {
     let presets = vec!["openrouter", "custom endpoint"];
     let choice = Select::new()
@@ -65,9 +64,20 @@ pub fn tuning() -> Result<Tuning> {
         .default(500)
         .interact()?;
 
+    let prompt: String = Input::new()
+        .with_prompt("custom prompt]")
+        .default(String::from(
+            "You are a concise git commit message generator. \
+            Given a diff, write a single-line commit message. \
+            Use conventional commit format (feat:, fix:, refactor:, etc). \
+            Return nothing but the commit message.",
+        ))
+        .interact()?;
+
     Ok(Tuning {
         debounce_secs,
         max_diff_lines,
+        prompt,
     })
 }
 
@@ -80,6 +90,7 @@ pub struct Provider {
 pub struct Tuning {
     pub debounce_secs: u64,
     pub max_diff_lines: usize,
+    pub prompt: String,
 }
 
 const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";

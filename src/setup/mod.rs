@@ -14,6 +14,7 @@ pub fn run(paths: &Paths) -> Result<()> {
     let tuning = prompts::tuning()?;
 
     let config = build_config(&provider, tuning);
+
     paths.init_dirs()?;
     std::fs::write(&paths.config, config)?;
 
@@ -31,11 +32,13 @@ model = "{}"
 api_key = "{}"
 debounce_secs = {}
 max_diff_lines = {}
+prompt = "{}"
 "#,
         provider.endpoint,
         provider.model,
         provider.api_key,
         tuning.debounce_secs,
         tuning.max_diff_lines,
+        tuning.prompt,
     )
 }
