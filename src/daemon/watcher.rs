@@ -76,7 +76,12 @@ impl RepoWatcher {
 
     fn should_ignore(&self, event: &Event) -> bool {
         event.paths.iter().all(|path| {
-            // ignore changes inside .git/
+            // allow .git/index changes (staging events)
+            if path == &self.workdir.join(".git").join("index") {
+                return false;
+            }
+
+            // ignore other changes inside .git/
             if path.starts_with(self.workdir.join(".git")) {
                 return true;
             }
@@ -93,11 +98,18 @@ impl RepoWatcher {
     }
 
     fn on_debounce(&mut self, config: &SottoConfig, paths: &Paths) -> Result<()> {
-        let diff = self.get_workdir_diff(config)?;
+        // check staged diff first (higher priority - user might be about to commit)
+        let staged_diff = self.get_staged_diff(config)?;
+        let workdir_diff = self.get_workdir_diff(config)?;
 
-        if diff.is_empty() {
-            return Ok(());
-        }
+        // prefer staged diff if it exists, otherwise use workdir diff
+        let diff = if !staged_diff.is_empty() {
+            staged_diff
+        } else if !workdir_diff.is_empty() {
+            workdir_diff
+        } else {
+            return Ok(()); // nothing to generate for
+        };
 
         let hash = hash_string(&diff);
 
