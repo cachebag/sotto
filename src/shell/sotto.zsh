@@ -74,7 +74,7 @@ _sotto_ghost() {
     _sotto_clear_highlight
     local start=${#BUFFER}
     local end=$(( start + ${#POSTDISPLAY} ))
-    _sotto_highlight_entry="$start $end fg=green,italic"
+    _sotto_highlight_entry="$start $end fg=cyan,italic"
     region_highlight+=("$_sotto_highlight_entry")
 }
 
