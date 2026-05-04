@@ -2,6 +2,7 @@ use anyhow::Result;
 use dialoguer::{Input, Password, Select};
 use std::env;
 
+
 pub fn provider() -> Result<Provider> {
     let presets = vec!["openrouter", "custom endpoint"];
     let choice = Select::new()
@@ -21,9 +22,14 @@ fn open_router() -> Result<Provider> {
         .with_prompt("OpenRouter API key (openrouter.ai/keys)")
         .interact()?;
 
+    let model: String = Input::new()
+        .with_prompt("OpenRouter model id")
+        .default(OPENROUTER_MODEL_DEFAULT.into())
+        .interact_text()?;
+
     Ok(Provider {
-        endpoint: "https://openrouter.ai/api/v1/chat/completions".into(),
-        model: "openai/gpt-oss-120b:free".into(),
+        endpoint: OPENROUTER_ENDPOINT.into(),
+        model,
         api_key,
     })
 }
@@ -75,3 +81,6 @@ pub struct Tuning {
     pub debounce_secs: u64,
     pub max_diff_lines: usize,
 }
+
+const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_MODEL_DEFAULT: &str = "openai/gpt-oss-120b:free";

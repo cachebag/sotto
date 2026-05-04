@@ -13,7 +13,7 @@ pub fn run(paths: &Paths) -> Result<()> {
         .context("couldn't detect your shell - set $SHELL or pass --shell")?;
     let tuning = prompts::tuning()?;
 
-    let config = build_config(provider, tuning);
+    let config = build_config(&provider, tuning);
     paths.init_dirs()?;
     std::fs::write(&paths.config, config)?;
 
@@ -24,7 +24,7 @@ pub fn run(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-fn build_config(provider: prompts::Provider, tuning: prompts::Tuning) -> String {
+fn build_config(provider: &prompts::Provider, tuning: prompts::Tuning) -> String {
     format!(
         r#"endpoint = "{}"
 model = "{}"
