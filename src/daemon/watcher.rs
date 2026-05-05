@@ -159,6 +159,8 @@ impl RepoWatcher {
     }
 }
 
+// FIXME: This is a copy of the function in shell/complete.rs
+// Should move this to a shared module.
 fn diff_to_string(diff: &git2::Diff, max_lines: usize) -> Result<String> {
     let mut output = String::new();
     let mut line_count: usize = 0;

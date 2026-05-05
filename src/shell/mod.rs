@@ -46,6 +46,7 @@ fn inject_fish(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+// FIXME: We use `dirs::config_dir()` here but config.rs uses XDG
 fn script_dir(paths: &Paths) -> Result<PathBuf> {
     let dir = paths
         .cache_dir

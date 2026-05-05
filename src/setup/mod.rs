@@ -25,6 +25,7 @@ pub fn run(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+// FIXME: We should pull api key from an env var or at least chmod 600 during setup.
 fn build_config(provider: &prompts::Provider, tuning: prompts::Tuning) -> String {
     let escaped_prompt = tuning.prompt.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
