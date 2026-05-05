@@ -31,9 +31,6 @@ struct ResponseMessage {
     content: String,
 }
 
-// FIXME:
-// Some of this is quite crude. Obviously, we should eventually allow the user to
-// configure/customize how they like their commits.
 pub fn generate(config: &SottoConfig, diff: &str) -> Result<String> {
     let user = format!("Generate a commit message for this diff:\n\n{diff}");
 

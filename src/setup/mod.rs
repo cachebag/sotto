@@ -26,6 +26,7 @@ pub fn run(paths: &Paths) -> Result<()> {
 }
 
 fn build_config(provider: &prompts::Provider, tuning: prompts::Tuning) -> String {
+    let escaped_prompt = tuning.prompt.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         r#"endpoint = "{}"
 model = "{}"
@@ -39,6 +40,6 @@ prompt = "{}"
         provider.api_key,
         tuning.debounce_secs,
         tuning.max_diff_lines,
-        tuning.prompt,
+        escaped_prompt,
     )
 }

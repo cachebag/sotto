@@ -83,6 +83,11 @@ impl SottoConfig {
     }
 }
 
+pub const DEFAULT_PROMPT: &str = "You are a concise git commit message generator. \
+    Given a diff, write a single-line commit message. \
+    Use conventional commit format (feat:, fix:, refactor:, etc). \
+    Return nothing but the commit message.";
+
 mod defaults {
     pub fn endpoint() -> String {
         "https://openrouter.ai/api/v1/chat/completions".to_string()
@@ -102,11 +107,6 @@ mod defaults {
     //    10
     // }
     pub fn prompt() -> String {
-        String::from(
-            "You are a concise git commit message generator. \
-            Given a diff, write a single-line commit message. \
-            Use conventional commit format (feat:, fix:, refactor:, etc). \
-            Return nothing but the commit message.",
-        )
+        super::DEFAULT_PROMPT.to_string()
     }
 }

@@ -2,6 +2,8 @@ use anyhow::Result;
 use dialoguer::{Input, Password, Select};
 use std::env;
 
+use crate::config::DEFAULT_PROMPT;
+
 pub fn provider() -> Result<Provider> {
     let presets = vec!["openrouter", "custom endpoint"];
     let choice = Select::new()
@@ -65,13 +67,8 @@ pub fn tuning() -> Result<Tuning> {
         .interact()?;
 
     let prompt: String = Input::new()
-        .with_prompt("custom prompt]")
-        .default(String::from(
-            "You are a concise git commit message generator. \
-            Given a diff, write a single-line commit message. \
-            Use conventional commit format (feat:, fix:, refactor:, etc). \
-            Return nothing but the commit message.",
-        ))
+        .with_prompt("custom prompt")
+        .default(DEFAULT_PROMPT.to_string())
         .interact()?;
 
     Ok(Tuning {
