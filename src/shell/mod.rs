@@ -60,7 +60,7 @@ fn append_if_missing(rc_file: &PathBuf, line: &str) -> Result<()> {
     let contents = fs::read_to_string(rc_file).unwrap_or_default();
 
     if contents.contains(line) {
-        return Ok(()); // already injected 
+        return Ok(()); // already injected
     }
 
     let mut file = fs::OpenOptions::new()

@@ -1,17 +1,30 @@
 // Configuration for sotto state
 
 use anyhow::{Context, Result};
-use dirs::{config_dir, data_local_dir};
 use serde::Deserialize;
-use std::{fs, path::PathBuf};
+use std::{env, fs, path::PathBuf};
+
+fn xdg_config_home() -> Option<PathBuf> {
+    env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+}
+
+fn xdg_data_home() -> Option<PathBuf> {
+    env::var("XDG_DATA_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+}
 
 impl Paths {
     pub fn resolve() -> Result<Self> {
-        let data_dir = data_local_dir()
+        let data_dir = xdg_data_home()
             .context("could not resolve data directory")?
             .join("sotto");
 
-        let config_dir = config_dir()
+        let config_dir = xdg_config_home()
             .context("could not resolve config directory")?
             .join("sotto");
 
