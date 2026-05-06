@@ -1,7 +1,5 @@
 # <p align="center"> sotto
 
-**<p align="center"><em>sotto voce</em> — “under the voice” or quietly, and under ones breath </p>**
-
 https://github.com/user-attachments/assets/93632909-0fc1-4928-ab7a-f5a433d2c017
 
 <p align="center"> <code>sotto</code> watches your git repo, sends diffs to an LLM API (e.g. OpenRouter), and surfaces a <b>cached commit message</b> in your shell when you commit.
