@@ -1,11 +1,13 @@
 mod prompts;
 
 use anyhow::{Context, Result};
-use std::fs::{self, OpenOptions};
+use std::fs::{self};
+
+#[cfg(unix)]
 use std::io::Write;
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
 use crate::config::Paths;
 use crate::shell;
@@ -52,36 +54,40 @@ prompt = "{}"
 fn write_config(path: &std::path::Path, config: &str) -> Result<()> {
     #[cfg(unix)]
     {
-        let mut temp_path = path.to_path_buf();
-        temp_path.set_extension(format!("toml.tmp.{}", std::process::id()));
+        use std::path::Path;
 
-        let write_result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .mode(0o600)
-                .open(&temp_path)
-                .with_context(|| format!("failed to create {}", temp_path.display()))?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
 
-            file.write_all(config.as_bytes())
-                .with_context(|| format!("failed to write {}", temp_path.display()))?;
-            file.sync_all()
-                .with_context(|| format!("failed to flush {}", temp_path.display()))?;
+        let basename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config.toml");
 
-            fs::rename(&temp_path, path)
-                .with_context(|| format!("failed to install {}", path.display()))?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(&format!("{basename}."))
+            .suffix(".tmp")
+            .permissions(fs::Permissions::from_mode(0o600))
+            .tempfile_in(parent)
+            .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
 
-            Ok(())
-        })();
+        tmp.as_file_mut()
+            .write_all(config.as_bytes())
+            .with_context(|| format!("failed to write {}", tmp.path().display()))?;
+        tmp.as_file_mut()
+            .sync_all()
+            .with_context(|| format!("failed to flush {}", tmp.path().display()))?;
 
-        if write_result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
+        tmp.persist(path)
+            .map_err(|e| anyhow::Error::from(e.error))
+            .with_context(|| format!("failed to install {}", path.display()))?;
 
-        write_result
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+
+        Ok(())
     }
 
     #[cfg(not(unix))]
