@@ -65,6 +65,8 @@ pub struct Paths {
 #[derive(Debug, Deserialize)]
 pub struct SottoConfig {
     pub api_key: String,
+
+    #[serde(default = "defaults::endpoint")]
     pub endpoint: String,
 
     #[serde(default = "defaults::model")]
