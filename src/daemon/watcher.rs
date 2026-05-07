@@ -77,6 +77,9 @@ impl RepoWatcher {
         let mut last_event: Option<Instant> = None;
 
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(event) => {
                     if self.should_ignore(&event) {
@@ -85,9 +88,6 @@ impl RepoWatcher {
                     last_event = Some(Instant::now());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if shutdown.load(Ordering::Relaxed) {
-                        break;
-                    }
                     // check if debounce window passed
                     if let Some(ts) = last_event
                         && ts.elapsed() >= debounce
