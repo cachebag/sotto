@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod ipc;
 mod setup;
 mod shell;
 
