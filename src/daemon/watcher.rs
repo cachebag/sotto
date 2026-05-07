@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -10,6 +12,30 @@ use sha2::{Digest, Sha256};
 use crate::config::{Paths, SottoConfig};
 use crate::daemon::cache;
 use crate::daemon::generator;
+
+fn install_shutdown_hook() -> Result<Arc<AtomicBool>> {
+    let flag = Arc::new(AtomicBool::new(false));
+
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::signal::{SIGINT, SIGTERM};
+        use signal_hook::flag;
+
+        flag::register(SIGTERM, Arc::clone(&flag)).context("register SIGTERM handler")?;
+        flag::register(SIGINT, Arc::clone(&flag)).context("register SIGINT handler")?;
+    }
+
+    #[cfg(windows)]
+    {
+        let f = Arc::clone(&flag);
+        ctrlc::set_handler(move || {
+            f.store(true, Ordering::Relaxed);
+        })
+        .context("set Ctrl+C handler")?;
+    }
+
+    Ok(flag)
+}
 
 impl RepoWatcher {
     /// Open a repo at the current working directory.
@@ -31,6 +57,8 @@ impl RepoWatcher {
     }
     /// Watch a working tree and generate commit messages
     pub fn start(&mut self, config: &SottoConfig, paths: &Paths) -> Result<()> {
+        let shutdown = install_shutdown_hook()?;
+
         let (tx, rx) = mpsc::channel::<Event>();
 
         let mut watcher = RecommendedWatcher::new(
@@ -57,6 +85,9 @@ impl RepoWatcher {
                     last_event = Some(Instant::now());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
                     // check if debounce window passed
                     if let Some(ts) = last_event
                         && ts.elapsed() >= debounce

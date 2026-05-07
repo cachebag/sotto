@@ -17,3 +17,9 @@ tempfile = "3.27.0"
 sha2 = "0.11.0"
 toml = "1.1.2"
 ureq = { version = "3.3.0", features = ["json"] }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.4.4"
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3.5.2"
