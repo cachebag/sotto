@@ -165,6 +165,7 @@ pub enum EventKind {
 pub struct ServerEvent {
     pub v: u32,
     pub repo_id: String,
+    #[serde(flatten)]
     pub event: EventKind,
 }
 
@@ -207,6 +208,7 @@ pub struct ClientRequest {
     pub v: u32,
     pub repo_id: String,
     pub request_id: u64,
+    #[serde(flatten)]
     pub op: ClientOp,
 }
 
@@ -214,6 +216,94 @@ pub struct ClientRequest {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn wire_format_json_examples_match_expected_shape() {
+        let hello = ClientRequest {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "deadbeef".into(),
+            request_id: 1,
+            op: ClientOp::Hello,
+        };
+        assert_eq!(
+            serde_json::to_string(&hello).unwrap(),
+            r#"{"v":1,"repo_id":"deadbeef","request_id":1,"op":"hello"}"#
+        );
+
+        let get_state = ClientRequest {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "cafe".into(),
+            request_id: 99,
+            op: ClientOp::GetState,
+        };
+        assert_eq!(
+            serde_json::to_string(&get_state).unwrap(),
+            r#"{"v":1,"repo_id":"cafe","request_id":99,"op":"get_state"}"#
+        );
+
+        let res = ServerResponse {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "srv".into(),
+            request_id: 3,
+            body: ResponseBody::HelloAck {
+                server_version: IPC_PROTOCOL_VERSION,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&res).unwrap(),
+            r#"{"v":1,"repo_id":"srv","request_id":3,"body":{"t":"hello_ack","server_version":1}}"#
+        );
+
+        let res_state = ServerResponse {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "srv2".into(),
+            request_id: 0,
+            body: ResponseBody::State {
+                state: RepoStateSnapshot {
+                    phase: RepoPhase::Watching,
+                    diff_hash: Some("abc".into()),
+                    error: None,
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&res_state).unwrap(),
+            concat!(
+                r#"{"v":1,"repo_id":"srv2","request_id":0,"body":"#,
+                r#"{"t":"state","state":{"phase":"watching","diff_hash":"abc"}}}"#
+            )
+        );
+
+        let res_err = ServerResponse {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "e".into(),
+            request_id: 0,
+            body: ResponseBody::Err {
+                code: "e_conn".into(),
+                message: "downstream failed".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&res_err).unwrap(),
+            r#"{"v":1,"repo_id":"e","request_id":0,"body":{"t":"err","code":"e_conn","message":"downstream failed"}}"#
+        );
+
+        let ev = ServerEvent {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "abc".into(),
+            event: EventKind::RepoState {
+                state: RepoStateSnapshot {
+                    phase: RepoPhase::Ready,
+                    diff_hash: None,
+                    error: None,
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&ev).unwrap(),
+            r#"{"v":1,"repo_id":"abc","event":"repo_state","state":{"phase":"ready"}}"#
+        );
+    }
 
     #[test]
     fn frame_roundtrip() {
