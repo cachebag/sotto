@@ -1,5 +1,6 @@
-//! Unix socket IPC types and framing.
-//!
-//! This module defines the shared **protocol** only.
+//! Unix socket IPC types, framing, and server.
 
 pub mod protocol;
+
+#[cfg(unix)]
+pub mod server;

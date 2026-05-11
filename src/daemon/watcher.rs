@@ -13,6 +13,11 @@ use crate::config::{Paths, SottoConfig};
 use crate::daemon::cache;
 use crate::daemon::generator;
 
+#[cfg(unix)]
+use crate::ipc::protocol::RepoPhase;
+#[cfg(unix)]
+use crate::ipc::server::EventBus;
+
 fn install_shutdown_hook() -> Result<Arc<AtomicBool>> {
     let flag = Arc::new(AtomicBool::new(false));
 
@@ -59,6 +64,21 @@ impl RepoWatcher {
     pub fn start(&mut self, config: &SottoConfig, paths: &Paths) -> Result<()> {
         let shutdown = install_shutdown_hook()?;
 
+        #[cfg(unix)]
+        let mut event_bus: Option<EventBus> = {
+            let repo_id = self.repo_cache_id()?;
+            match EventBus::bind(&paths.socket, Arc::clone(&shutdown), repo_id) {
+                Ok(bus) => {
+                    eprintln!("sotto: ipc listening on {}", paths.socket.display());
+                    Some(bus)
+                }
+                Err(e) => {
+                    eprintln!("sotto: ipc bind failed: {e}");
+                    None
+                }
+            }
+        };
+
         let (tx, rx) = mpsc::channel::<Event>();
 
         let mut watcher = RecommendedWatcher::new(
@@ -86,23 +106,74 @@ impl RepoWatcher {
                         continue;
                     }
                     last_event = Some(Instant::now());
+
+                    #[cfg(unix)]
+                    if let Some(bus) = &mut event_bus {
+                        bus.broadcast(RepoPhase::Debouncing, None, None);
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // check if debounce window passed
                     if let Some(ts) = last_event
                         && ts.elapsed() >= debounce
                     {
                         last_event = None;
-                        if let Err(e) = self.on_debounce(config, paths) {
-                            eprintln!("sotto: {e}");
-                        }
+                        self.run_generation_cycle(
+                            config,
+                            paths,
+                            #[cfg(unix)]
+                            &mut event_bus,
+                        );
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
+        // EventBus::drop unlinks the socket file
         Ok(())
+    }
+
+    /// Check for a meaningful diff, generate a commit message, and broadcast
+    /// IPC phase transitions at each step.
+    fn run_generation_cycle(
+        &mut self,
+        config: &SottoConfig,
+        paths: &Paths,
+        #[cfg(unix)] event_bus: &mut Option<EventBus>,
+    ) {
+        match self.check_diff(config) {
+            Ok(Some((diff, hash))) => {
+                #[cfg(unix)]
+                if let Some(bus) = event_bus.as_mut() {
+                    bus.broadcast(RepoPhase::Generating, None, None);
+                }
+
+                match self.generate_and_cache(config, paths, &diff, hash) {
+                    Ok(()) =>
+                    {
+                        #[cfg(unix)]
+                        if let Some(bus) = event_bus.as_mut() {
+                            bus.broadcast(RepoPhase::Ready, self.last_diff_hash.clone(), None);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("sotto: {e}");
+                        #[cfg(unix)]
+                        if let Some(bus) = event_bus.as_mut() {
+                            bus.broadcast(RepoPhase::Error, None, Some(e.to_string()));
+                        }
+                    }
+                }
+            }
+            Ok(None) => {} // empty diff or unchanged hash — nothing to do
+            Err(e) => {
+                eprintln!("sotto: {e}");
+                #[cfg(unix)]
+                if let Some(bus) = event_bus.as_mut() {
+                    bus.broadcast(RepoPhase::Error, None, Some(e.to_string()));
+                }
+            }
+        }
     }
 
     fn should_ignore(&self, event: &Event) -> bool {
@@ -128,33 +199,40 @@ impl RepoWatcher {
         })
     }
 
-    fn on_debounce(&mut self, config: &SottoConfig, paths: &Paths) -> Result<()> {
-        // check staged diff first (higher priority - user might be about to commit)
+    /// Returns `Some((diff_text, hash))` when a new diff needs generation,
+    /// `None` when the diff is empty or the hash hasn't changed.
+    fn check_diff(&self, config: &SottoConfig) -> Result<Option<(String, String)>> {
         let staged_diff = self.get_staged_diff(config)?;
         let workdir_diff = self.get_workdir_diff(config)?;
 
-        // prefer staged diff if it exists, otherwise use workdir diff
         let diff = if !staged_diff.is_empty() {
             staged_diff
         } else if !workdir_diff.is_empty() {
             workdir_diff
         } else {
-            return Ok(()); // nothing to generate for
+            return Ok(None);
         };
 
         let hash = hash_string(&diff);
 
-        // nothing meaningfully changed
         if self.last_diff_hash.as_ref() == Some(&hash) {
-            return Ok(());
+            return Ok(None);
         }
 
-        let repo_id = self.repo_cache_id()?;
-        let message = generator::generate(config, &diff)?;
+        Ok(Some((diff, hash)))
+    }
 
+    fn generate_and_cache(
+        &mut self,
+        config: &SottoConfig,
+        paths: &Paths,
+        diff: &str,
+        hash: String,
+    ) -> Result<()> {
+        let repo_id = self.repo_cache_id()?;
+        let message = generator::generate(config, diff)?;
         cache::write(&paths.cache_dir, &repo_id, &message, &hash)?;
         self.last_diff_hash = Some(hash);
-
         Ok(())
     }
 
