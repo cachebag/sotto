@@ -1,6 +1,10 @@
 # <p align="center"> sotto
 
-https://github.com/user-attachments/assets/93632909-0fc1-4928-ab7a-f5a433d2c017
+
+
+https://github.com/user-attachments/assets/5cf92850-6037-47f9-96a3-fe9a4f0a5303
+
+
 
 <p align="center"> <code>sotto</code> watches your git repo, sends diffs to an LLM API (e.g. OpenRouter), and surfaces a <b>cached commit message</b> in your shell when you commit.
 
