@@ -12,13 +12,14 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, RwLock, mpsc};
 use std::time::Duration;
 use std::{io, thread};
 
 use super::protocol::{
-    EventKind, IPC_PROTOCOL_VERSION, RepoPhase, RepoStateSnapshot, ServerEvent,
-    encode_server_event, write_frame,
+    ClientOp, EventKind, IPC_PROTOCOL_VERSION, RepoPhase, RepoStateSnapshot, ResponseBody,
+    ServerEvent, ServerResponse, decode_client_request, encode_server_event,
+    encode_server_response, read_frame, write_frame,
 };
 
 impl EventBus {
@@ -41,14 +42,29 @@ impl EventBus {
 
         let (tx, rx) = mpsc::channel();
 
+        let current_state = Arc::new(RwLock::new(RepoStateSnapshot {
+            phase: RepoPhase::Watching,
+            diff_hash: None,
+            error: None,
+        }));
+
         let accept_stop = Arc::new(AtomicBool::new(false));
+        let accept_state = Arc::clone(&current_state);
         let accept_stop_thread = Arc::clone(&accept_stop);
         let shutdown_thread = Arc::clone(&shutdown);
+        let accept_repo_id = repo_id.clone();
 
         let accept_thread = thread::Builder::new()
             .name("sotto-ipc-accept".into())
             .spawn(move || {
-                accept_loop(listener, tx, shutdown_thread, accept_stop_thread);
+                accept_loop(
+                    listener,
+                    tx,
+                    shutdown_thread,
+                    accept_stop_thread,
+                    accept_state,
+                    accept_repo_id,
+                );
             })?;
 
         Ok(Self {
@@ -56,6 +72,7 @@ impl EventBus {
             incoming: rx,
             socket_path: socket_path.to_path_buf(),
             repo_id,
+            current_state,
             accept_stop,
             accept_thread: Some(accept_thread),
         })
@@ -78,6 +95,15 @@ impl EventBus {
             } else {
                 eprintln!("sotto: ipc: failed to spawn client writer thread");
             }
+        }
+
+        let snapshot = RepoStateSnapshot {
+            phase: phase.clone(),
+            diff_hash: diff_hash.clone(),
+            error: error.clone(),
+        };
+        if let Ok(mut state) = self.current_state.write() {
+            *state = snapshot;
         }
 
         if self.clients.is_empty() {
@@ -197,16 +223,18 @@ fn accept_loop(
     tx: mpsc::Sender<UnixStream>,
     shutdown: Arc<AtomicBool>,
     accept_stop: Arc<AtomicBool>,
+    state: Arc<RwLock<RepoStateSnapshot>>,
+    repo_id: String,
 ) {
     while !shutdown.load(Ordering::Relaxed) && !accept_stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _)) => {
-                if tx.send(stream).is_err() {
+                if !try_handle_request(&stream, &state, &repo_id) && tx.send(stream).is_err() {
                     break;
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(200));
+                thread::sleep(Duration::from_millis(50));
             }
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => {
@@ -217,12 +245,70 @@ fn accept_loop(
     }
 }
 
+/// Peek at a newly accepted connection. If the client sent a request (GetState,
+/// Hello), respond immediately and return `true` (stream consumed). If there's
+/// no data within the peek window, return `false` so the stream is passed to
+/// the broadcast subscriber list.
+fn try_handle_request(
+    stream: &UnixStream,
+    state: &Arc<RwLock<RepoStateSnapshot>>,
+    repo_id: &str,
+) -> bool {
+    let _ = stream.set_read_timeout(Some(REQUEST_PEEK_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(REQUEST_PEEK_TIMEOUT));
+
+    let mut reader = stream;
+    let frame = match read_frame(&mut reader) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    let req = match decode_client_request(&frame) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    let body = match req.op {
+        ClientOp::Hello => ResponseBody::HelloAck {
+            server_version: IPC_PROTOCOL_VERSION,
+        },
+        ClientOp::GetState => {
+            let snapshot = state
+                .read()
+                .map(|s| s.clone())
+                .unwrap_or(RepoStateSnapshot {
+                    phase: RepoPhase::Error,
+                    diff_hash: None,
+                    error: Some("state lock poisoned".into()),
+                });
+            ResponseBody::State { state: snapshot }
+        }
+    };
+
+    let resp = ServerResponse {
+        v: IPC_PROTOCOL_VERSION,
+        repo_id: repo_id.into(),
+        request_id: req.request_id,
+        body,
+    };
+
+    let mut writer = stream;
+    let _ = encode_server_response(&resp)
+        .ok()
+        .and_then(|payload| write_frame(&mut writer, &payload).ok());
+
+    true
+}
+
+const REQUEST_PEEK_TIMEOUT: Duration = Duration::from_millis(50);
+
 /// Handle held by the watcher to push events to connected IPC clients.
 pub struct EventBus {
     clients: Vec<ClientHandle>,
     incoming: mpsc::Receiver<UnixStream>,
     socket_path: PathBuf,
     repo_id: String,
+    current_state: Arc<RwLock<RepoStateSnapshot>>,
     accept_stop: Arc<AtomicBool>,
     accept_thread: Option<thread::JoinHandle<()>>,
 }
@@ -238,6 +324,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::ipc::client::query_state;
     use crate::ipc::protocol::{
         EventKind, IPC_PROTOCOL_VERSION, RepoPhase, decode_server_event, read_frame,
     };
@@ -305,5 +392,100 @@ mod tests {
         let EventKind::RepoState { state } = &ev.event;
         assert_eq!(state.phase, RepoPhase::Ready);
         assert_eq!(state.diff_hash.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn query_state_returns_current_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("query.sock");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut bus = EventBus::bind(&sock, Arc::clone(&shutdown), "repo_xyz".into()).unwrap();
+
+        bus.broadcast(RepoPhase::Ready, Some("hash999".into()), None);
+
+        // Give the accept loop time to be ready
+        thread::sleep(Duration::from_millis(50));
+
+        let state = query_state(&sock, "repo_xyz").expect("query_state should succeed");
+        assert_eq!(state.phase, RepoPhase::Ready);
+        assert_eq!(state.diff_hash.as_deref(), Some("hash999"));
+    }
+
+    #[test]
+    fn query_state_returns_none_when_no_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("missing.sock");
+        assert!(query_state(&sock, "x").is_none());
+    }
+
+    #[test]
+    fn query_state_returns_non_ready_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("generating.sock");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut bus = EventBus::bind(&sock, Arc::clone(&shutdown), "repo".into()).unwrap();
+
+        bus.broadcast(RepoPhase::Generating, None, None);
+        thread::sleep(Duration::from_millis(50));
+
+        let state = query_state(&sock, "repo").expect("should return Generating state");
+        assert_eq!(state.phase, RepoPhase::Generating);
+        assert!(state.diff_hash.is_none());
+    }
+
+    #[test]
+    fn query_state_reflects_latest_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("transition.sock");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut bus = EventBus::bind(&sock, Arc::clone(&shutdown), "repo".into()).unwrap();
+
+        bus.broadcast(RepoPhase::Generating, None, None);
+        bus.broadcast(RepoPhase::Ready, Some("final_hash".into()), None);
+        thread::sleep(Duration::from_millis(50));
+
+        let state = query_state(&sock, "repo").expect("should return latest state");
+        assert_eq!(state.phase, RepoPhase::Ready);
+        assert_eq!(state.diff_hash.as_deref(), Some("final_hash"));
+    }
+
+    #[test]
+    fn hello_request_returns_server_version() {
+        use crate::ipc::protocol::{
+            ClientOp, ClientRequest, ResponseBody, decode_server_response, encode_client_request,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("hello.sock");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let _bus = EventBus::bind(&sock, Arc::clone(&shutdown), "repo".into()).unwrap();
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mut stream = UnixStream::connect(&sock).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+
+        let req = ClientRequest {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "repo".into(),
+            request_id: 42,
+            op: ClientOp::Hello,
+        };
+        let payload = encode_client_request(&req).unwrap();
+        write_frame(&mut stream, &payload).unwrap();
+
+        let frame = read_frame(&mut stream).unwrap();
+        let resp = decode_server_response(&frame).unwrap();
+
+        assert_eq!(resp.request_id, 42);
+        let ResponseBody::HelloAck { server_version } = resp.body else {
+            panic!("expected HelloAck, got {:?}", resp.body);
+        };
+        assert_eq!(server_version, IPC_PROTOCOL_VERSION);
     }
 }
