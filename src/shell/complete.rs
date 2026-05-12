@@ -1,4 +1,4 @@
-use git2::{DiffFormat, DiffOptions, Repository};
+use git2::{DiffFormat, DiffOptions, Oid, Repository};
 use sha2::{Digest, Sha256};
 
 use crate::config::{Paths, SottoConfig};
@@ -53,7 +53,11 @@ fn try_socket_fast_path(_paths: &Paths, _repo_id: &str) -> Option<String> {
     None
 }
 
-/// Original path: read cache, recompute diffs locally, validate the hash.
+/// Original path: read cache, recompute diffs locally, validate staleness.
+///
+/// For staged content, prefer comparing the index tree OID rather than raw
+/// patch bytes — staging the same content the daemon already saw should reuse
+/// the cached message even though the diff text formatting may differ.
 fn try_disk_validated(paths: &Paths, repo: &Repository, repo_id: &str) -> Option<String> {
     let entry = cache::read(&paths.cache_dir, repo_id)?;
     let config = SottoConfig::load_silently(paths)?;
@@ -61,6 +65,13 @@ fn try_disk_validated(paths: &Paths, repo: &Repository, repo_id: &str) -> Option
     let staged_diff = get_staged_diff(repo, config.max_diff_lines).ok()?;
 
     if !staged_diff.is_empty() {
+        if let Some(ref cached_tree) = entry.staged_tree
+            && let Some(current_tree) = index_tree_oid(repo)
+            && *cached_tree == current_tree
+        {
+            return Some(entry.message);
+        }
+
         let staged_hash = hash_string(&staged_diff);
         if staged_hash != entry.diff_hash {
             return None;
@@ -74,6 +85,14 @@ fn try_disk_validated(paths: &Paths, repo: &Repository, repo_id: &str) -> Option
     }
 
     Some(entry.message)
+}
+
+// FIXME: Duplicated in `daemon/watcher.rs`; consolidate. Confirm this matches `git write-tree` /
+// real commits for unusual index states (sparse checkout, conflict entries, etc.).
+fn index_tree_oid(repo: &Repository) -> Option<String> {
+    let mut index = repo.index().ok()?;
+    let oid: Oid = index.write_tree().ok()?;
+    Some(oid.to_string())
 }
 
 fn get_workdir_diff(repo: &Repository, max_lines: usize) -> Result<String, git2::Error> {

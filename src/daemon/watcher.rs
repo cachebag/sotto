@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use git2::{DiffFormat, DiffOptions, Repository};
+use git2::{DiffFormat, DiffOptions, Oid, Repository};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
 use sha2::{Digest, Sha256};
 
@@ -57,6 +57,7 @@ impl RepoWatcher {
             repo,
             workdir,
             last_diff_hash: None,
+            last_staged_tree: None,
             debounce_secs: 15,
         })
     }
@@ -143,12 +144,12 @@ impl RepoWatcher {
         event_bus: &mut Option<EventBus>,
     ) {
         match self.check_diff(config) {
-            Ok(Some((diff, hash))) => {
+            Ok(Some(result)) => {
                 if let Some(bus) = event_bus.as_mut() {
                     bus.broadcast(RepoPhase::Generating, None, None);
                 }
 
-                match self.generate_and_cache(config, paths, &diff, hash) {
+                match self.generate_and_cache(config, paths, result) {
                     Ok(()) => {
                         if let Some(bus) = event_bus.as_mut() {
                             bus.broadcast(RepoPhase::Ready, self.last_diff_hash.clone(), None);
@@ -175,8 +176,8 @@ impl RepoWatcher {
     #[cfg(not(unix))]
     fn run_generation_cycle(&mut self, config: &SottoConfig, paths: &Paths) {
         match self.check_diff(config) {
-            Ok(Some((diff, hash))) => {
-                if let Err(e) = self.generate_and_cache(config, paths, &diff, hash) {
+            Ok(Some(result)) => {
+                if let Err(e) = self.generate_and_cache(config, paths, result) {
                     eprintln!("sotto: {e}");
                 }
             }
@@ -208,19 +209,28 @@ impl RepoWatcher {
         })
     }
 
-    /// Returns `Some((diff_text, hash))` when a new diff needs generation,
-    /// `None` when the diff is empty or the hash hasn't changed.
-    fn check_diff(&self, config: &SottoConfig) -> Result<Option<(String, String)>> {
+    /// Returns `Some(DiffResult)` when a new diff needs generation,
+    /// `None` when the diff is empty or nothing meaningful changed.
+    fn check_diff(&self, config: &SottoConfig) -> Result<Option<DiffResult>> {
         let staged_diff = self.get_staged_diff(config)?;
         let workdir_diff = self.get_workdir_diff(config)?;
 
-        let diff = if !staged_diff.is_empty() {
-            staged_diff
+        let (diff, staged_tree) = if !staged_diff.is_empty() {
+            let tree_oid = self.index_tree_oid();
+            (staged_diff, tree_oid)
         } else if !workdir_diff.is_empty() {
-            workdir_diff
+            (workdir_diff, None)
         } else {
             return Ok(None);
         };
+
+        // When staging content we already generated for, the tree OID will
+        // match even though the raw patch bytes differ — skip the regen.
+        if let Some(ref tree) = staged_tree
+            && self.last_staged_tree.as_ref() == Some(tree)
+        {
+            return Ok(None);
+        }
 
         let hash = hash_string(&diff);
 
@@ -228,20 +238,40 @@ impl RepoWatcher {
             return Ok(None);
         }
 
-        Ok(Some((diff, hash)))
+        Ok(Some(DiffResult {
+            diff,
+            hash,
+            staged_tree,
+        }))
+    }
+
+    /// The tree OID that `git commit` would record given the current index.
+    /// Returns `None` if the index can't be read or written as a tree.
+    // FIXME: Duplicated in `shell/complete.rs`; consolidate. Confirm this matches `git write-tree` /
+    // real commits for unusual index states (sparse checkout, conflict entries, etc.).
+    fn index_tree_oid(&self) -> Option<String> {
+        let mut index = self.repo.index().ok()?;
+        let oid: Oid = index.write_tree().ok()?;
+        Some(oid.to_string())
     }
 
     fn generate_and_cache(
         &mut self,
         config: &SottoConfig,
         paths: &Paths,
-        diff: &str,
-        hash: String,
+        result: DiffResult,
     ) -> Result<()> {
         let repo_id = self.repo_cache_id()?;
-        let message = generator::generate(config, diff)?;
-        cache::write(&paths.cache_dir, &repo_id, &message, &hash)?;
-        self.last_diff_hash = Some(hash);
+        let message = generator::generate(config, &result.diff)?;
+        cache::write(
+            &paths.cache_dir,
+            &repo_id,
+            &message,
+            &result.hash,
+            result.staged_tree.as_deref(),
+        )?;
+        self.last_diff_hash = Some(result.hash);
+        self.last_staged_tree = result.staged_tree;
         Ok(())
     }
 
@@ -319,9 +349,16 @@ fn hash_string(input: &str) -> String {
         .collect()
 }
 
+struct DiffResult {
+    diff: String,
+    hash: String,
+    staged_tree: Option<String>,
+}
+
 pub struct RepoWatcher {
     repo: Repository,
     workdir: PathBuf,
     last_diff_hash: Option<String>,
+    last_staged_tree: Option<String>,
     debounce_secs: u64,
 }
