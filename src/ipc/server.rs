@@ -7,7 +7,7 @@
 //! never touches streams directly — it sends pre-serialized frames through
 //! per-client channels, so `broadcast` is non-blocking by construction.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use std::{io, thread};
 use super::protocol::{
     ClientOp, EventKind, IPC_PROTOCOL_VERSION, RepoPhase, RepoStateSnapshot, ResponseBody,
     ServerEvent, ServerResponse, decode_client_request, encode_server_event,
-    encode_server_response, read_frame, write_frame,
+    encode_server_response, write_frame,
 };
 
 impl EventBus {
@@ -218,6 +218,33 @@ fn spawn_client_writer(mut stream: UnixStream) -> Option<ClientHandle> {
 
 const CLIENT_FRAME_QUEUE_CAP: usize = 64;
 
+fn write_err_response(
+    stream: &mut UnixStream,
+    daemon_repo_id: &str,
+    request_id: u64,
+    code: &str,
+    message: &str,
+) {
+    let resp = ServerResponse {
+        v: IPC_PROTOCOL_VERSION,
+        repo_id: daemon_repo_id.into(),
+        request_id,
+        body: ResponseBody::Err {
+            code: code.into(),
+            message: message.into(),
+        },
+    };
+    let _ = encode_server_response(&resp)
+        .ok()
+        .and_then(|payload| write_frame(stream, &payload).ok());
+}
+
+fn reset_subscriber_stream(stream: &mut UnixStream) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(None);
+    let _ = stream.set_write_timeout(None);
+}
+
 fn accept_loop(
     listener: UnixListener,
     tx: mpsc::Sender<UnixStream>,
@@ -228,8 +255,8 @@ fn accept_loop(
 ) {
     while !shutdown.load(Ordering::Relaxed) && !accept_stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _)) => {
-                if !try_handle_request(&stream, &state, &repo_id) && tx.send(stream).is_err() {
+            Ok((mut stream, _)) => {
+                if !try_handle_request(&mut stream, &state, &repo_id) && tx.send(stream).is_err() {
                     break;
                 }
             }
@@ -245,30 +272,107 @@ fn accept_loop(
     }
 }
 
-/// Peek at a newly accepted connection. If the client sent a request (GetState,
-/// Hello), respond immediately and return `true` (stream consumed). If there's
-/// no data within the peek window, return `false` so the stream is passed to
-/// the broadcast subscriber list.
+/// If the client sends a framed request immediately, handle it and return `true`.
+/// If no data is pending yet, reset the stream for the subscriber writer and return `false`.
 fn try_handle_request(
-    stream: &UnixStream,
+    stream: &mut UnixStream,
     state: &Arc<RwLock<RepoStateSnapshot>>,
-    repo_id: &str,
+    daemon_repo_id: &str,
 ) -> bool {
-    let _ = stream.set_read_timeout(Some(REQUEST_PEEK_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(REQUEST_PEEK_TIMEOUT));
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
 
-    let mut reader = stream;
-    let frame = match read_frame(&mut reader) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
+    let mut len_buf = [0u8; 4];
+    let mut filled = 0usize;
 
-    let req = match decode_client_request(&frame) {
+    loop {
+        match stream.read(&mut len_buf[filled..]) {
+            Ok(0) => {
+                reset_subscriber_stream(stream);
+                return false;
+            }
+            Ok(n) => {
+                filled += n;
+                if filled == 4 {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if filled == 0 {
+                    reset_subscriber_stream(stream);
+                    return false;
+                }
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(REQUEST_BODY_READ_TIMEOUT));
+                let ok = stream.read_exact(&mut len_buf[filled..]).is_ok();
+                let _ = stream.set_read_timeout(None);
+                if !ok {
+                    return true;
+                }
+                break;
+            }
+            Err(_) => {
+                reset_subscriber_stream(stream);
+                return false;
+            }
+        }
+    }
+
+    let len = u32::from_le_bytes(len_buf);
+    if len > super::protocol::MAX_FRAME_BYTES {
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_write_timeout(Some(REQUEST_WRITE_TIMEOUT));
+        write_err_response(
+            stream,
+            daemon_repo_id,
+            0,
+            "e_frame_too_large",
+            "request frame exceeds max size",
+        );
+        let _ = stream.set_write_timeout(None);
+        return true;
+    }
+
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(REQUEST_BODY_READ_TIMEOUT));
+    let mut body = vec![0u8; len as usize];
+    if stream.read_exact(&mut body).is_err() {
+        let _ = stream.set_read_timeout(None);
+        return true;
+    }
+    let _ = stream.set_read_timeout(None);
+
+    let req = match decode_client_request(&body) {
         Ok(r) => r,
-        Err(_) => return false,
+        Err(_) => {
+            let _ = stream.set_write_timeout(Some(REQUEST_WRITE_TIMEOUT));
+            write_err_response(
+                stream,
+                daemon_repo_id,
+                0,
+                "e_bad_request",
+                "could not decode client request",
+            );
+            let _ = stream.set_write_timeout(None);
+            return true;
+        }
     };
 
-    let body = match req.op {
+    if req.repo_id != daemon_repo_id {
+        let _ = stream.set_write_timeout(Some(REQUEST_WRITE_TIMEOUT));
+        write_err_response(
+            stream,
+            daemon_repo_id,
+            req.request_id,
+            "e_repo_mismatch",
+            "client repo_id does not match this daemon",
+        );
+        let _ = stream.set_write_timeout(None);
+        return true;
+    }
+
+    let resp_body = match req.op {
         ClientOp::Hello => ResponseBody::HelloAck {
             server_version: IPC_PROTOCOL_VERSION,
         },
@@ -287,20 +391,22 @@ fn try_handle_request(
 
     let resp = ServerResponse {
         v: IPC_PROTOCOL_VERSION,
-        repo_id: repo_id.into(),
+        repo_id: daemon_repo_id.into(),
         request_id: req.request_id,
-        body,
+        body: resp_body,
     };
 
-    let mut writer = stream;
+    let _ = stream.set_write_timeout(Some(REQUEST_WRITE_TIMEOUT));
     let _ = encode_server_response(&resp)
         .ok()
-        .and_then(|payload| write_frame(&mut writer, &payload).ok());
+        .and_then(|payload| write_frame(stream, &payload).ok());
+    let _ = stream.set_write_timeout(None);
 
     true
 }
 
-const REQUEST_PEEK_TIMEOUT: Duration = Duration::from_millis(50);
+const REQUEST_BODY_READ_TIMEOUT: Duration = Duration::from_millis(200);
+const REQUEST_WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Handle held by the watcher to push events to connected IPC clients.
 pub struct EventBus {
@@ -322,12 +428,42 @@ struct ClientHandle {
 #[cfg(all(unix, test))]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use crate::ipc::client::query_state;
     use crate::ipc::protocol::{
         EventKind, IPC_PROTOCOL_VERSION, RepoPhase, decode_server_event, read_frame,
     };
+
+    fn poll_get_state(sock: &Path, repo_id: &str) -> RepoStateSnapshot {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(s) = query_state(sock, repo_id) {
+                return s;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "query_state timed out for {}",
+                sock.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn connect_retry(sock: &Path) -> UnixStream {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(s) = UnixStream::connect(sock) {
+                return s;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "connect timed out for {}",
+                sock.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn prepare_rejects_non_socket_path() {
@@ -380,13 +516,18 @@ mod tests {
         });
 
         connected_recv.recv().unwrap();
-        // Non-blocking accept may complete connect() before our `tx.send`; give the accept
-        // thread time to enqueue the `UnixStream` before we broadcast.
-        thread::sleep(Duration::from_millis(250));
-
-        bus.broadcast(RepoPhase::Ready, Some("abc123".into()), None);
-
-        let ev = reader.join().unwrap();
+        let start = Instant::now();
+        let ev = loop {
+            bus.broadcast(RepoPhase::Ready, Some("abc123".into()), None);
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "broadcast test timed out"
+            );
+            if reader.is_finished() {
+                break reader.join().unwrap();
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
         assert_eq!(ev.v, IPC_PROTOCOL_VERSION);
         assert_eq!(ev.repo_id, "repo_hash");
         let EventKind::RepoState { state } = &ev.event;
@@ -403,10 +544,7 @@ mod tests {
 
         bus.broadcast(RepoPhase::Ready, Some("hash999".into()), None);
 
-        // Give the accept loop time to be ready
-        thread::sleep(Duration::from_millis(50));
-
-        let state = query_state(&sock, "repo_xyz").expect("query_state should succeed");
+        let state = poll_get_state(&sock, "repo_xyz");
         assert_eq!(state.phase, RepoPhase::Ready);
         assert_eq!(state.diff_hash.as_deref(), Some("hash999"));
     }
@@ -426,9 +564,8 @@ mod tests {
         let mut bus = EventBus::bind(&sock, Arc::clone(&shutdown), "repo".into()).unwrap();
 
         bus.broadcast(RepoPhase::Generating, None, None);
-        thread::sleep(Duration::from_millis(50));
 
-        let state = query_state(&sock, "repo").expect("should return Generating state");
+        let state = poll_get_state(&sock, "repo");
         assert_eq!(state.phase, RepoPhase::Generating);
         assert!(state.diff_hash.is_none());
     }
@@ -442,11 +579,23 @@ mod tests {
 
         bus.broadcast(RepoPhase::Generating, None, None);
         bus.broadcast(RepoPhase::Ready, Some("final_hash".into()), None);
-        thread::sleep(Duration::from_millis(50));
 
-        let state = query_state(&sock, "repo").expect("should return latest state");
+        let state = poll_get_state(&sock, "repo");
         assert_eq!(state.phase, RepoPhase::Ready);
         assert_eq!(state.diff_hash.as_deref(), Some("final_hash"));
+    }
+
+    #[test]
+    fn query_state_returns_none_on_repo_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("mismatch.sock");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut bus = EventBus::bind(&sock, Arc::clone(&shutdown), "daemon_repo".into()).unwrap();
+
+        bus.broadcast(RepoPhase::Ready, Some("h".into()), None);
+
+        let _ = poll_get_state(&sock, "daemon_repo");
+        assert!(query_state(&sock, "wrong_client_repo").is_none());
     }
 
     #[test]
@@ -460,9 +609,7 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
         let _bus = EventBus::bind(&sock, Arc::clone(&shutdown), "repo".into()).unwrap();
 
-        thread::sleep(Duration::from_millis(50));
-
-        let mut stream = UnixStream::connect(&sock).unwrap();
+        let mut stream = connect_retry(&sock);
         stream
             .set_read_timeout(Some(Duration::from_millis(500)))
             .unwrap();
@@ -482,6 +629,7 @@ mod tests {
         let frame = read_frame(&mut stream).unwrap();
         let resp = decode_server_response(&frame).unwrap();
 
+        assert_eq!(resp.repo_id, "repo");
         assert_eq!(resp.request_id, 42);
         let ResponseBody::HelloAck { server_version } = resp.body else {
             panic!("expected HelloAck, got {:?}", resp.body);
