@@ -68,7 +68,12 @@ impl RepoWatcher {
         #[cfg(unix)]
         let mut event_bus: Option<EventBus> = {
             let repo_id = self.repo_cache_id()?;
-            match EventBus::bind(&paths.socket, Arc::clone(&shutdown), repo_id) {
+            match EventBus::bind_with_log(
+                &paths.socket,
+                Arc::clone(&shutdown),
+                repo_id,
+                Some(paths.log.clone()),
+            ) {
                 Ok(bus) => {
                     eprintln!("sotto: ipc listening on {}", paths.socket.display());
                     Some(bus)

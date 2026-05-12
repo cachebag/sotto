@@ -7,6 +7,7 @@
 //! never touches streams directly — it sends pre-serialized frames through
 //! per-client channels, so `broadcast` is non-blocking by construction.
 
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -29,10 +30,20 @@ impl EventBus {
     /// - stale socket from a crash: unlinked only when connect fails with
     ///   `ConnectionRefused` (nothing listening)
     /// - another live daemon: connect succeeds, returns `AddrInUse`
+    #[cfg(test)]
     pub fn bind(
         socket_path: &Path,
         shutdown: Arc<AtomicBool>,
         repo_id: String,
+    ) -> io::Result<Self> {
+        Self::bind_with_log(socket_path, shutdown, repo_id, None)
+    }
+
+    pub fn bind_with_log(
+        socket_path: &Path,
+        shutdown: Arc<AtomicBool>,
+        repo_id: String,
+        log_path: Option<PathBuf>,
     ) -> io::Result<Self> {
         prepare_socket_for_bind(socket_path)?;
 
@@ -53,6 +64,7 @@ impl EventBus {
         let accept_stop_thread = Arc::clone(&accept_stop);
         let shutdown_thread = Arc::clone(&shutdown);
         let accept_repo_id = repo_id.clone();
+        let accept_log = log_path.clone();
 
         let accept_thread = thread::Builder::new()
             .name("sotto-ipc-accept".into())
@@ -64,6 +76,7 @@ impl EventBus {
                     accept_stop_thread,
                     accept_state,
                     accept_repo_id,
+                    accept_log,
                 );
             })?;
 
@@ -73,6 +86,7 @@ impl EventBus {
             socket_path: socket_path.to_path_buf(),
             repo_id,
             current_state,
+            log_path,
             accept_stop,
             accept_thread: Some(accept_thread),
         })
@@ -93,7 +107,7 @@ impl EventBus {
             if let Some(handle) = spawn_client_writer(stream) {
                 self.clients.push(handle);
             } else {
-                eprintln!("sotto: ipc: failed to spawn client writer thread");
+                ipc_log(&self.log_path, "failed to spawn client writer thread");
             }
         }
 
@@ -164,6 +178,10 @@ fn restrict_socket_permissions(socket_path: &Path) -> io::Result<()> {
     std::fs::set_permissions(socket_path, perms)
 }
 
+/// Owner-only read/write. The threat model is local-user: the socket lives
+/// under `$XDG_DATA_HOME/sotto/` (typically `~/.local/share/sotto/`), and
+/// only the owning user should be able to connect. We don't defend against
+/// root or same-user attacks. TLS on a Unix socket is a non-goal (see issue #14).
 const SOCKET_MODE: u32 = 0o600;
 
 /// If `socket_path` exists: must be a socket; connect determines stale vs live.
@@ -252,6 +270,7 @@ fn accept_loop(
     accept_stop: Arc<AtomicBool>,
     state: Arc<RwLock<RepoStateSnapshot>>,
     repo_id: String,
+    log_path: Option<PathBuf>,
 ) {
     while !shutdown.load(Ordering::Relaxed) && !accept_stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -265,7 +284,7 @@ fn accept_loop(
             }
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => {
-                eprintln!("sotto: ipc accept error: {e}");
+                ipc_log(&log_path, &format!("accept error: {e}"));
                 break;
             }
         }
@@ -415,6 +434,7 @@ pub struct EventBus {
     socket_path: PathBuf,
     repo_id: String,
     current_state: Arc<RwLock<RepoStateSnapshot>>,
+    log_path: Option<PathBuf>,
     accept_stop: Arc<AtomicBool>,
     accept_thread: Option<thread::JoinHandle<()>>,
 }
@@ -423,6 +443,29 @@ pub struct EventBus {
 /// the writer thread to exit and close the stream.
 struct ClientHandle {
     tx: mpsc::SyncSender<Vec<u8>>,
+}
+
+/// Append a timestamped line to the log file, falling back to stderr.
+fn ipc_log(log_path: &Option<PathBuf>, msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("{ts} sotto[ipc]: {msg}\n");
+
+    if let Some(path) = log_path {
+        let wrote = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| f.write_all(line.as_bytes()))
+            .is_ok();
+        if wrote {
+            return;
+        }
+    }
+
+    eprint!("{line}");
 }
 
 #[cfg(all(unix, test))]
@@ -635,5 +678,76 @@ mod tests {
             panic!("expected HelloAck, got {:?}", resp.body);
         };
         assert_eq!(server_version, IPC_PROTOCOL_VERSION);
+    }
+
+    /// Full path integration: temp XDG_DATA_HOME, nested dirs, bind, connect, roundtrip.
+    #[test]
+    fn xdg_paths_bind_connect_roundtrip() {
+        use crate::ipc::protocol::{
+            ClientOp, ClientRequest, ResponseBody, decode_server_response, encode_client_request,
+        };
+
+        let xdg = tempfile::tempdir().unwrap();
+        let data_dir = xdg.path().join("sotto");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let sock = data_dir.join("sotto.sock");
+        let log = data_dir.join("sotto.log");
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut bus =
+            EventBus::bind_with_log(&sock, Arc::clone(&shutdown), "repo".into(), Some(log))
+                .unwrap();
+
+        bus.broadcast(RepoPhase::Ready, Some("h1".into()), None);
+
+        let state = poll_get_state(&sock, "repo");
+        assert_eq!(state.phase, RepoPhase::Ready);
+        assert_eq!(state.diff_hash.as_deref(), Some("h1"));
+
+        let mut stream = connect_retry(&sock);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+
+        let req = ClientRequest {
+            v: IPC_PROTOCOL_VERSION,
+            repo_id: "repo".into(),
+            request_id: 7,
+            op: ClientOp::GetState,
+        };
+        let payload = encode_client_request(&req).unwrap();
+        write_frame(&mut stream, &payload).unwrap();
+
+        let frame = read_frame(&mut stream).unwrap();
+        let resp = decode_server_response(&frame).unwrap();
+
+        assert_eq!(resp.repo_id, "repo");
+        assert_eq!(resp.request_id, 7);
+        let ResponseBody::State { state } = resp.body else {
+            panic!("expected State, got {:?}", resp.body);
+        };
+        assert_eq!(state.phase, RepoPhase::Ready);
+        assert_eq!(state.diff_hash.as_deref(), Some("h1"));
+
+        let perms = std::fs::metadata(&sock).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, SOCKET_MODE);
+    }
+
+    #[test]
+    fn ipc_log_writes_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("sotto.log");
+        let log_opt = Some(log.clone());
+
+        ipc_log(&log_opt, "test message one");
+        ipc_log(&log_opt, "test message two");
+
+        let contents = std::fs::read_to_string(&log).unwrap();
+        assert!(contents.contains("sotto[ipc]: test message one"));
+        assert!(contents.contains("sotto[ipc]: test message two"));
+        assert_eq!(contents.lines().count(), 2);
     }
 }
