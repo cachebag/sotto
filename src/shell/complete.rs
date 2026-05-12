@@ -17,25 +17,56 @@ pub fn run(paths: &Paths) {
 fn try_read(paths: &Paths) -> Option<String> {
     let repo = Repository::discover(".").ok()?;
     let workdir = repo.workdir()?.to_string_lossy().to_string();
-
     let repo_id = hash_string(&workdir);
-    let entry = cache::read(&paths.cache_dir, &repo_id)?;
 
-    // validate that cached message matches the diff we're about to commit
+    if let Some(msg) = try_socket_fast_path(paths, &repo_id) {
+        return Some(msg);
+    }
+
+    try_disk_validated(paths, &repo, &repo_id)
+}
+
+/// Ask the daemon over the socket if the cache is fresh. If the daemon says
+/// `Ready` and the cache entry exists, trust it — skip local diff computation.
+#[cfg(unix)]
+fn try_socket_fast_path(paths: &Paths, repo_id: &str) -> Option<String> {
+    use crate::ipc::client::query_state;
+    use crate::ipc::protocol::RepoPhase;
+
+    let state = query_state(&paths.socket, repo_id)?;
+
+    if state.phase != RepoPhase::Ready {
+        return None;
+    }
+
+    let entry = cache::read(&paths.cache_dir, repo_id)?;
+
+    if state.diff_hash.as_ref() != Some(&entry.diff_hash) {
+        return None;
+    }
+
+    Some(entry.message)
+}
+
+#[cfg(not(unix))]
+fn try_socket_fast_path(_paths: &Paths, _repo_id: &str) -> Option<String> {
+    None
+}
+
+/// Original path: read cache, recompute diffs locally, validate the hash.
+fn try_disk_validated(paths: &Paths, repo: &Repository, repo_id: &str) -> Option<String> {
+    let entry = cache::read(&paths.cache_dir, repo_id)?;
     let config = SottoConfig::load_silently(paths)?;
 
-    let staged_diff = get_staged_diff(&repo, config.max_diff_lines).ok()?;
-    let staged_hash = hash_string(&staged_diff);
+    let staged_diff = get_staged_diff(repo, config.max_diff_lines).ok()?;
 
-    // if there are staged changes, message MUST match staged diff
-    // (user is committing staged changes, not workdir changes)
     if !staged_diff.is_empty() {
+        let staged_hash = hash_string(&staged_diff);
         if staged_hash != entry.diff_hash {
-            return None; // message is for wrong changes
+            return None;
         }
     } else {
-        // no staged changes yet - check workdir diff (pre-staging scenario)
-        let workdir_diff = get_workdir_diff(&repo, config.max_diff_lines).ok()?;
+        let workdir_diff = get_workdir_diff(repo, config.max_diff_lines).ok()?;
         let workdir_hash = hash_string(&workdir_diff);
         if workdir_hash != entry.diff_hash {
             return None;
