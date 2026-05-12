@@ -81,6 +81,10 @@ the daemon broadcasts state transitions over a unix socket: debouncing, generati
 
 the socket is push-based and non-blocking. each client gets a dedicated writer thread. dead clients are pruned instantly. the daemon never blocks on i/o.
 
+**daemon model:** for now it's one daemon per repo, launched from the working directory. a daemon binds a single socket under `$XDG_DATA_HOME/sotto/` (mode `0600`, local-user only — we don't defend against root). if a live daemon already holds the socket, a second `sotto daemon` fails with `AddrInUse`; stale sockets from crashes are detected via a connect probe and unlinked.
+
+this is intentionally simple. a future supervisor could manage multiple repos from one long-lived process, handing watchers off on `cd`. but that's a separate concern; the current shape keeps the daemon stateless enough that crash-and-restart is cheap and the shell always has a disk fallback.
+
 ### shell
 
 a thin layer that reads the cache and renders ghost text when you type `git commit -m '`. 
