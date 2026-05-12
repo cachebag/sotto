@@ -21,10 +21,11 @@ pub fn query_state(socket_path: &Path, repo_id: &str) -> Option<RepoStateSnapsho
     stream.set_read_timeout(Some(QUERY_TIMEOUT)).ok()?;
     stream.set_write_timeout(Some(QUERY_TIMEOUT)).ok()?;
 
+    let request_id = 1u64;
     let req = ClientRequest {
         v: IPC_PROTOCOL_VERSION,
         repo_id: repo_id.into(),
-        request_id: 0,
+        request_id,
         op: ClientOp::GetState,
     };
 
@@ -33,6 +34,10 @@ pub fn query_state(socket_path: &Path, repo_id: &str) -> Option<RepoStateSnapsho
 
     let frame = read_frame(&mut stream).ok()?;
     let resp = decode_server_response(&frame).ok()?;
+
+    if resp.repo_id != repo_id || resp.request_id != request_id {
+        return None;
+    }
 
     match resp.body {
         ResponseBody::State { state } => Some(state),
