@@ -105,10 +105,12 @@ impl RepoWatcher {
                     if self.should_ignore(&event) {
                         continue;
                     }
+                    let is_new_burst = last_event.is_none();
                     last_event = Some(Instant::now());
 
+                    // One debouncing notify per idle→active burst, not per filesystem event.
                     #[cfg(unix)]
-                    if let Some(bus) = &mut event_bus {
+                    if is_new_burst && let Some(bus) = &mut event_bus {
                         bus.broadcast(RepoPhase::Debouncing, None, None);
                     }
                 }
@@ -117,12 +119,10 @@ impl RepoWatcher {
                         && ts.elapsed() >= debounce
                     {
                         last_event = None;
-                        self.run_generation_cycle(
-                            config,
-                            paths,
-                            #[cfg(unix)]
-                            &mut event_bus,
-                        );
+                        #[cfg(unix)]
+                        self.run_generation_cycle_unix(config, paths, &mut event_bus);
+                        #[cfg(not(unix))]
+                        self.run_generation_cycle(config, paths);
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -135,44 +135,53 @@ impl RepoWatcher {
 
     /// Check for a meaningful diff, generate a commit message, and broadcast
     /// IPC phase transitions at each step.
-    fn run_generation_cycle(
+    #[cfg(unix)]
+    fn run_generation_cycle_unix(
         &mut self,
         config: &SottoConfig,
         paths: &Paths,
-        #[cfg(unix)] event_bus: &mut Option<EventBus>,
+        event_bus: &mut Option<EventBus>,
     ) {
         match self.check_diff(config) {
             Ok(Some((diff, hash))) => {
-                #[cfg(unix)]
                 if let Some(bus) = event_bus.as_mut() {
                     bus.broadcast(RepoPhase::Generating, None, None);
                 }
 
                 match self.generate_and_cache(config, paths, &diff, hash) {
-                    Ok(()) =>
-                    {
-                        #[cfg(unix)]
+                    Ok(()) => {
                         if let Some(bus) = event_bus.as_mut() {
                             bus.broadcast(RepoPhase::Ready, self.last_diff_hash.clone(), None);
                         }
                     }
                     Err(e) => {
                         eprintln!("sotto: {e}");
-                        #[cfg(unix)]
                         if let Some(bus) = event_bus.as_mut() {
                             bus.broadcast(RepoPhase::Error, None, Some(e.to_string()));
                         }
                     }
                 }
             }
-            Ok(None) => {} // empty diff or unchanged hash — nothing to do
+            Ok(None) => {}
             Err(e) => {
                 eprintln!("sotto: {e}");
-                #[cfg(unix)]
                 if let Some(bus) = event_bus.as_mut() {
                     bus.broadcast(RepoPhase::Error, None, Some(e.to_string()));
                 }
             }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn run_generation_cycle(&mut self, config: &SottoConfig, paths: &Paths) {
+        match self.check_diff(config) {
+            Ok(Some((diff, hash))) => {
+                if let Err(e) = self.generate_and_cache(config, paths, &diff, hash) {
+                    eprintln!("sotto: {e}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("sotto: {e}"),
         }
     }
 
