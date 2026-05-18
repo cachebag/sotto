@@ -1,9 +1,9 @@
 mod config;
 mod daemon;
+mod doctor;
 mod ipc;
 mod setup;
 mod shell;
-
 use clap::{Parser, Subcommand};
 use config::{Paths, SottoConfig};
 
@@ -22,6 +22,9 @@ enum Command {
     /// File watcher daemon
     Daemon,
 
+    /// Check health of configs and files
+    Doctor,
+
     /// Print cached commit message
     /// This is called by the shell widget
     Complete,
@@ -33,6 +36,7 @@ fn main() {
     let result = match cli.command {
         Command::Setup => run_setup(),
         Command::Daemon => run_daemon(),
+        Command::Doctor => run_doctor(),
         Command::Complete => {
             run_complete();
             Ok(())
@@ -45,6 +49,11 @@ fn main() {
     }
 }
 
+fn run_doctor() -> anyhow::Result<()> {
+    let paths = Paths::resolve()?;
+    let config = SottoConfig::load(&paths)?;
+    doctor::run(&paths, config)
+}
 fn run_setup() -> anyhow::Result<()> {
     let paths = Paths::resolve()?;
     setup::run(&paths)
