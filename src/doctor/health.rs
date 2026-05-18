@@ -42,7 +42,7 @@ pub fn parse_configs(config: SottoConfig) -> anyhow::Result<String> {
     if let Some(map) = config_map.as_object() {
         for (field_name, value) in map {
             let (icon, detail) = match value.as_str() {
-                Some(s) if s.is_empty() => ("x", "config field is empty".to_string()),
+                Some("") => ("x", "config field is empty".to_string()),
                 _ => (
                     "✓",
                     truncate(value.to_string(), 99).replace(['\\', '"'], ""),
