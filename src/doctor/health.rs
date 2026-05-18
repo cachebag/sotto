@@ -6,7 +6,7 @@ use crate::config::{Paths, SottoConfig};
 
 pub fn parse_location_configs(paths: &Paths) -> anyhow::Result<String> {
     let config_map = json!({
-        "cached dir" : paths.cache_dir,
+        "cache" : paths.cache_dir,
         "socket" : paths.socket,
         "config" : paths.config,
     });
@@ -14,24 +14,17 @@ pub fn parse_location_configs(paths: &Paths) -> anyhow::Result<String> {
 
     if let Some(map) = config_map.as_object() {
         for (field_name, value) in map {
-            if let Some(path_str) = value.as_str() {
-                if !Path::new(path_str).exists() {
-                    let _ = writeln!(
-                        &mut report,
-                        "[X] {:<19} {:<20}",
-                        field_name, "path not found"
-                    );
-                } else {
-                    let _ = writeln!(
-                        &mut report,
-                        "[✔] {:<18} {}",
-                        field_name,
-                        value.to_string().replace('\\', " ").replace('"', " ")
-                    );
-                }
-            }
+            let (icon, detail) = match value.as_str() {
+                Some(s) if !Path::new(s).exists() => ("x", "path not found".to_string()),
+                _ => (
+                    "✓",
+                    truncate(value.to_string(), 99).replace(['\\', '"'], ""),
+                ),
+            };
+            let _ = writeln!(&mut report, "[{icon}] {field_name:<13} {detail}");
         }
     }
+
     Ok(report)
 }
 
@@ -42,43 +35,32 @@ pub fn parse_configs(config: SottoConfig) -> anyhow::Result<String> {
         "endpoint" : config.endpoint,
         "model" : config.model,
         "debounce": config.debounce_secs,
-        "diff lines": config.max_diff_lines,
+        "diff": config.max_diff_lines,
         "prompt": config.prompt
     });
+
     if let Some(map) = config_map.as_object() {
         for (field_name, value) in map {
-            if let Some(s) = value.as_str() {
-                if s.is_empty() {
-                    let _ = writeln!(
-                        &mut report,
-                        "[X] {:<19} {:<20}",
-                        field_name, "config field is empty"
-                    );
-                } else {
-                    let _ = writeln!(
-                        &mut report,
-                        "[✔] {:<18} {}",
-                        field_name,
-                        truncate(value.to_string(), 99)
-                            .replace('\\', " ")
-                            .replace('"', " ")
-                    );
-                }
-            }
+            let (icon, detail) = match value.as_str() {
+                Some(s) if s.is_empty() => ("x", "config field is empty".to_string()),
+                _ => (
+                    "✓",
+                    truncate(value.to_string(), 99).replace(['\\', '"'], ""),
+                ),
+            };
+            let _ = writeln!(&mut report, "[{icon}] {field_name:<13} {detail}");
         }
     }
-
     Ok(report)
 }
 
 pub fn generate_report(locations: String, config: String) -> anyhow::Result<()> {
     let mut report = String::new();
 
-    writeln!(&mut report, "{}", "\nSOTTO DOCTOR")?;
-
-    writeln!(&mut report, "{}", "\nLocation Config:\n")?;
+    writeln!(&mut report, "\nSOTTO DOCTOR")?;
+    writeln!(&mut report, "\nLocation Config:\n")?;
     writeln!(&mut report, "{}", locations)?;
-    writeln!(&mut report, "{}", "Sotto Config:\n")?;
+    writeln!(&mut report, "Sotto Config:\n")?;
     writeln!(&mut report, "{}", config)?;
     println!("{}", &report);
 
