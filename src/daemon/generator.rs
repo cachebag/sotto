@@ -7,9 +7,16 @@ use serde::{Deserialize, Serialize};
 use crate::config::SottoConfig;
 
 pub fn generate(config: &SottoConfig, diff: &str) -> Result<String> {
+    match config.inference_type.as_str() {
+        "ollama" => generate_ollama(config, diff),
+        _ => generate_openai_compatible(config, diff),
+    }
+}
+
+fn generate_openai_compatible(config: &SottoConfig, diff: &str) -> Result<String> {
     warn_if_insecure_endpoint(&config.endpoint);
 
-    let body = build_request(config, diff);
+    let body = build_chat_request(config, diff);
 
     let response = ureq::post(&config.endpoint)
         .header("Authorization", &format!("Bearer {}", config.api_key))
@@ -17,10 +24,41 @@ pub fn generate(config: &SottoConfig, diff: &str) -> Result<String> {
 
     let body_str = response.into_body().read_to_string()?;
 
-    parse_response(&body_str)
+    parse_chat_response(&body_str)
 }
 
-fn build_request(config: &SottoConfig, diff: &str) -> ChatRequest {
+fn generate_ollama(config: &SottoConfig, diff: &str) -> Result<String> {
+    let prompt = format!(
+        "{}\n\nGenerate a commit message for this diff:\n\n{}",
+        config.prompt, diff
+    );
+    let model = config
+        .model
+        .split(':')
+        .next()
+        .unwrap_or(&config.model)
+        .to_string();
+
+    let body = OllamaRequest {
+        model,
+        prompt,
+        stream: false,
+    };
+
+    let response: OllamaResponse = ureq::post(&config.endpoint)
+        .send_json(&body)?
+        .body_mut()
+        .read_json()?;
+
+    let message = response.response.trim().to_string();
+    if message.is_empty() {
+        anyhow::bail!("Ollama returned an empty commit message");
+    }
+
+    Ok(message)
+}
+
+fn build_chat_request(config: &SottoConfig, diff: &str) -> ChatRequest {
     let user = format!("Generate a commit message for this diff:\n\n{diff}");
 
     ChatRequest {
@@ -39,7 +77,7 @@ fn build_request(config: &SottoConfig, diff: &str) -> ChatRequest {
     }
 }
 
-fn parse_response(body: &str) -> Result<String> {
+fn parse_chat_response(body: &str) -> Result<String> {
     let chat: ChatResponse = serde_json::from_str(body).context("failed to parse API response")?;
 
     let message = chat
@@ -137,6 +175,18 @@ struct Choice {
 #[derive(Deserialize)]
 struct ResponseMessage {
     content: String,
+}
+
+#[derive(Serialize)]
+struct OllamaRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct OllamaResponse {
+    response: String,
 }
 
 #[cfg(test)]

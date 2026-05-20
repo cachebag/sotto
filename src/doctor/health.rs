@@ -36,7 +36,8 @@ pub fn parse_configs(config: SottoConfig) -> anyhow::Result<String> {
         "model" : config.model,
         "debounce": config.debounce_secs,
         "diff": config.max_diff_lines,
-        "prompt": config.prompt
+        "prompt": config.prompt,
+        "inference_type" : config.inference_type
     });
 
     if let Some(map) = config_map.as_object() {

@@ -41,6 +41,7 @@ fn build_config(provider: prompts::Provider, tuning: prompts::Tuning) -> SottoCo
         debounce_secs: tuning.debounce_secs,
         max_diff_lines: tuning.max_diff_lines,
         prompt: tuning.prompt,
+        inference_type: provider.inference_type,
     }
 }
 
