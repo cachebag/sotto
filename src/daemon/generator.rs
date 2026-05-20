@@ -28,8 +28,16 @@ fn generate_openai_compatible(config: &SottoConfig, diff: &str) -> Result<String
 }
 
 fn generate_ollama(config: &SottoConfig, diff: &str) -> Result<String> {
-    let prompt = format!("{}\n\nGenerate a commit message for this diff:\n\n{}", config.prompt, diff);
-    let model = config.model.split(':').next().unwrap_or(&config.model).to_string();
+    let prompt = format!(
+        "{}\n\nGenerate a commit message for this diff:\n\n{}",
+        config.prompt, diff
+    );
+    let model = config
+        .model
+        .split(':')
+        .next()
+        .unwrap_or(&config.model)
+        .to_string();
 
     let body = OllamaRequest {
         model,
