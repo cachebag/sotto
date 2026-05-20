@@ -69,21 +69,25 @@ fn open_router() -> Result<Provider> {
 }
 
 fn ollama() -> Result<Provider> {
-    let model_names = get_downloaded_models()?;
-
-    if model_names.is_empty() {
-        anyhow::bail!("no ollama models found - run `ollama pull <model>` first");
-    }
-
-    let choice = Select::new()
-        .with_prompt("available ollama models")
-        .items(&model_names)
-        .default(0)
-        .interact()?;
+    let model_names = get_model_names();
+    let model: String = match model_names.is_empty() {
+        true => Input::new()
+            .with_prompt("ollama model: ")
+            .default(OLLAMA_DEFAULT_MODEL.into())
+            .interact()?,
+        false => {
+            let choice = Select::new()
+                .with_prompt("available ollama models")
+                .items(&model_names)
+                .default(0)
+                .interact()?;
+            model_names[choice].to_string()
+        }
+    };
 
     Ok(Provider {
         inference_type: "ollama".to_string(),
-        model: model_names[choice].clone(),
+        model,
         endpoint: OLLAMA_ENDPOINT.to_string(),
         api_key: String::new(),
     })
@@ -102,14 +106,29 @@ fn custom() -> Result<Provider> {
     })
 }
 
-fn get_downloaded_models() -> Result<Vec<String>> {
+fn get_downloaded_models() -> Result<OllamaList> {
     let models: OllamaList = ureq::get("http://localhost:11434/api/tags")
         .call()?
         .body_mut()
         .read_json()?;
 
-    let model_names = models.models.into_iter().map(|m| m.name).collect();
-    Ok(model_names)
+    Ok(models)
+}
+
+//let model_names = models.models.into_iter().map(|m| m.name).collect();
+
+fn get_model_names() -> Vec<String> {
+    let model_names = get_downloaded_models();
+    match model_names {
+        Ok(models) => models.models.into_iter().map(|m| m.name).collect(),
+        Err(e) => {
+            eprintln!(
+                "⚠️ Warning: Failed to fetch models from Ollama (is it running?). Error: {e}"
+            );
+
+            Vec::new()
+        }
+    }
 }
 
 pub struct Provider {
@@ -138,3 +157,4 @@ struct OllamaModel {
 const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODEL_DEFAULT: &str = "openai/gpt-oss-120b:free";
 const OLLAMA_ENDPOINT: &str = "http://localhost:11434/api/generate";
+const OLLAMA_DEFAULT_MODEL: &str = "llama3.2:latest";
