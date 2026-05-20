@@ -58,7 +58,7 @@ fn parse_response(body: &str) -> Result<String> {
 fn warn_if_insecure_endpoint(endpoint: &str) {
     static WARNED: Once = Once::new();
 
-    if std::env::var("SOTTO_ALLOW_HTTP").is_ok() {
+    if std::env::var("SOTTO_ALLOW_HTTP").is_ok_and(|v| v == "1") {
         return;
     }
 
@@ -86,6 +86,12 @@ fn extract_host(url: &str) -> Option<String> {
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))?;
     let host_port = without_scheme.split('/').next()?;
+
+    if let Some(bracketed) = host_port.strip_prefix('[') {
+        let host = bracketed.split(']').next()?;
+        return Some(host.to_string());
+    }
+
     let host = host_port.split(':').next()?;
     Some(host.to_string())
 }
@@ -154,6 +160,11 @@ mod tests {
         assert_eq!(
             extract_host("http://127.0.0.1/path"),
             Some("127.0.0.1".into())
+        );
+        assert_eq!(extract_host("http://[::1]:8080/api"), Some("::1".into()));
+        assert_eq!(
+            extract_host("http://[fe80::1]:11434/api"),
+            Some("fe80::1".into())
         );
         assert_eq!(extract_host("invalid-url"), None);
     }
