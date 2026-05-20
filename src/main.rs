@@ -4,6 +4,7 @@ mod doctor;
 mod ipc;
 mod setup;
 mod shell;
+mod ui;
 use clap::{Parser, Subcommand};
 use config::{Paths, SottoConfig};
 

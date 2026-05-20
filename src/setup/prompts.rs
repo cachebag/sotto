@@ -1,18 +1,14 @@
 use std::env;
 
 use anyhow::Result;
-use dialoguer::{Input, Password, Select};
 use serde::Deserialize;
 
 use crate::config::DEFAULT_PROMPT;
+use crate::ui;
 
 pub fn provider() -> Result<Provider> {
-    let presets = vec!["openrouter", "ollama", "custom endpoint"];
-    let choice = Select::new()
-        .with_prompt("provider")
-        .items(&presets)
-        .default(0)
-        .interact()?;
+    let presets = ["openrouter", "ollama", "custom endpoint"];
+    let choice = ui::select("provider", &presets)?;
 
     match choice {
         0 => open_router(),
@@ -28,20 +24,9 @@ pub fn detect_shell() -> Option<String> {
 }
 
 pub fn tuning() -> Result<Tuning> {
-    let debounce_secs: u64 = Input::new()
-        .with_prompt("debounce (seconds)")
-        .default(15)
-        .interact()?;
-
-    let max_diff_lines: usize = Input::new()
-        .with_prompt("max diff lines")
-        .default(500)
-        .interact()?;
-
-    let prompt: String = Input::new()
-        .with_prompt("custom prompt")
-        .default(DEFAULT_PROMPT.to_string())
-        .interact()?;
+    let debounce_secs: u64 = ui::input_with_default("debounce (seconds)", "15")?.parse()?;
+    let max_diff_lines: usize = ui::input_with_default("max diff lines", "500")?.parse()?;
+    let prompt = ui::input_with_default("custom prompt", DEFAULT_PROMPT)?;
 
     Ok(Tuning {
         debounce_secs,
@@ -51,14 +36,8 @@ pub fn tuning() -> Result<Tuning> {
 }
 
 fn open_router() -> Result<Provider> {
-    let api_key = Password::new()
-        .with_prompt("OpenRouter API key (openrouter.ai/keys)")
-        .interact()?;
-
-    let model: String = Input::new()
-        .with_prompt("OpenRouter model id")
-        .default(OPENROUTER_MODEL_DEFAULT.into())
-        .interact_text()?;
+    let api_key = ui::password("OpenRouter API key (openrouter.ai/keys)")?;
+    let model = ui::input_with_default("OpenRouter model id", OPENROUTER_MODEL_DEFAULT)?;
 
     Ok(Provider {
         inference_type: "openrouter".to_string(),
@@ -70,19 +49,11 @@ fn open_router() -> Result<Provider> {
 
 fn ollama() -> Result<Provider> {
     let model_names = get_model_names();
-    let model: String = match model_names.is_empty() {
-        true => Input::new()
-            .with_prompt("ollama model: ")
-            .default(OLLAMA_DEFAULT_MODEL.into())
-            .interact()?,
-        false => {
-            let choice = Select::new()
-                .with_prompt("available ollama models")
-                .items(&model_names)
-                .default(0)
-                .interact()?;
-            model_names[choice].to_string()
-        }
+    let model = if model_names.is_empty() {
+        ui::input_with_default("ollama model", OLLAMA_DEFAULT_MODEL)?
+    } else {
+        let choice = ui::select("available ollama models", &model_names)?;
+        model_names[choice].clone()
     };
 
     Ok(Provider {
@@ -94,9 +65,9 @@ fn ollama() -> Result<Provider> {
 }
 
 fn custom() -> Result<Provider> {
-    let endpoint: String = Input::new().with_prompt("endpoint").interact()?;
-    let model: String = Input::new().with_prompt("model").interact()?;
-    let api_key = Password::new().with_prompt("api key").interact()?;
+    let endpoint = ui::input("endpoint")?;
+    let model = ui::input("model")?;
+    let api_key = ui::password("api key")?;
 
     Ok(Provider {
         inference_type: "custom".to_string(),
@@ -116,14 +87,10 @@ fn get_downloaded_models() -> Result<OllamaList> {
 }
 
 fn get_model_names() -> Vec<String> {
-    let model_names = get_downloaded_models();
-    match model_names {
+    match get_downloaded_models() {
         Ok(models) => models.models.into_iter().map(|m| m.name).collect(),
         Err(e) => {
-            eprintln!(
-                "⚠️ Warning: Failed to fetch models from Ollama (is it running?). Error: {e}"
-            );
-
+            eprintln!("warning: failed to fetch models from ollama (is it running?): {e}");
             Vec::new()
         }
     }

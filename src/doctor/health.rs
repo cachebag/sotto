@@ -1,73 +1,72 @@
-use std::{fmt::Write, path::Path};
-
-use serde_json::json;
+use std::path::Path;
 
 use crate::config::{Paths, SottoConfig};
+use crate::ui;
 
-pub fn parse_location_configs(paths: &Paths) -> anyhow::Result<String> {
-    let config_map = json!({
-        "cache" : paths.cache_dir,
-        "socket" : paths.socket,
-        "config" : paths.config,
-    });
-    let mut report = String::new();
+pub fn parse_location_configs(paths: &Paths) -> Vec<String> {
+    let items = [
+        ("cache", paths.cache_dir.display().to_string()),
+        ("socket", paths.socket.display().to_string()),
+        ("config", paths.config.display().to_string()),
+    ];
 
-    if let Some(map) = config_map.as_object() {
-        for (field_name, value) in map {
-            let (icon, detail) = match value.as_str() {
-                Some(s) if !Path::new(s).exists() => ("x", "path not found".to_string()),
-                _ => (
-                    "✓",
-                    truncate(value.to_string(), 99).replace(['\\', '"'], ""),
-                ),
+    items
+        .into_iter()
+        .map(|(label, path)| {
+            let (icon, detail) = if !Path::new(&path).exists() {
+                ("x", "path not found".to_string())
+            } else {
+                ("✓", truncate(&path, 99))
             };
-            let _ = writeln!(&mut report, "[{icon}] {field_name:<13} {detail}");
-        }
-    }
-
-    Ok(report)
+            ui::status_line(icon, label, &detail)
+        })
+        .collect()
 }
 
-pub fn parse_configs(config: SottoConfig) -> anyhow::Result<String> {
-    let mut report = String::new();
-    let config_map = json!({
-        "api_key" : config.api_key,
-        "endpoint" : config.endpoint,
-        "model" : config.model,
-        "debounce": config.debounce_secs,
-        "diff": config.max_diff_lines,
-        "prompt": config.prompt,
-        "inference_type" : config.inference_type
-    });
+pub fn parse_configs(config: &SottoConfig) -> Vec<String> {
+    let items = [
+        ("api_key", mask_secret(&config.api_key)),
+        ("endpoint", config.endpoint.clone()),
+        ("model", config.model.clone()),
+        ("debounce", config.debounce_secs.to_string()),
+        ("diff", config.max_diff_lines.to_string()),
+        ("prompt", truncate(&config.prompt, 60)),
+        ("inference_type", config.inference_type.clone()),
+    ];
 
-    if let Some(map) = config_map.as_object() {
-        for (field_name, value) in map {
-            let (icon, detail) = match value.as_str() {
-                Some("") => ("x", "config field is empty".to_string()),
-                _ => (
-                    "✓",
-                    truncate(value.to_string(), 99).replace(['\\', '"'], ""),
-                ),
+    items
+        .into_iter()
+        .map(|(label, value)| {
+            let (icon, detail) = if value.is_empty() {
+                ("x", "config field is empty".to_string())
+            } else {
+                ("✓", value)
             };
-            let _ = writeln!(&mut report, "[{icon}] {field_name:<13} {detail}");
-        }
+            ui::status_line(icon, label, &detail)
+        })
+        .collect()
+}
+
+pub fn generate_report(locations: Vec<String>, config: Vec<String>) {
+    ui::header("SOTTO DOCTOR");
+    print!("{}", ui::report_section("Location Config:", &locations));
+    print!("{}", ui::report_section("Sotto Config:", &config));
+}
+
+fn truncate(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(max_width - 3).collect::<String>())
     }
-    Ok(report)
 }
 
-pub fn generate_report(locations: String, config: String) -> anyhow::Result<()> {
-    let mut report = String::new();
-
-    writeln!(&mut report, "\nSOTTO DOCTOR")?;
-    writeln!(&mut report, "\nLocation Config:\n")?;
-    writeln!(&mut report, "{}", locations)?;
-    writeln!(&mut report, "Sotto Config:\n")?;
-    writeln!(&mut report, "{}", config)?;
-    println!("{}", &report);
-
-    Ok(())
-}
-
-fn truncate(s: String, max_width: usize) -> String {
-    s.chars().take(max_width).collect()
+fn mask_secret(s: &str) -> String {
+    if s.is_empty() {
+        String::new()
+    } else if s.len() <= 8 {
+        "*".repeat(s.len())
+    } else {
+        format!("{}...{}", &s[..4], &s[s.len() - 4..])
+    }
 }
