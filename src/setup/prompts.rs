@@ -115,8 +115,6 @@ fn get_downloaded_models() -> Result<OllamaList> {
     Ok(models)
 }
 
-//let model_names = models.models.into_iter().map(|m| m.name).collect();
-
 fn get_model_names() -> Vec<String> {
     let model_names = get_downloaded_models();
     match model_names {
