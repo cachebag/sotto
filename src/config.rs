@@ -4,20 +4,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{env, fs, path::PathBuf};
 
-fn xdg_config_home() -> Option<PathBuf> {
-    env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-}
-
-fn xdg_data_home() -> Option<PathBuf> {
-    env::var("XDG_DATA_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
-}
-
 impl Paths {
     pub fn resolve() -> Result<Self> {
         let data_dir = xdg_data_home()
@@ -54,58 +40,6 @@ impl Paths {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Paths {
-    pub cache_dir: PathBuf,
-    pub socket: PathBuf,
-    pub log: PathBuf,
-    pub config: PathBuf,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SottoConfig {
-    pub endpoint: String,
-    pub model: String,
-    pub api_key: String,
-    pub debounce_secs: u64,
-    pub max_diff_lines: usize,
-    pub prompt: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SottoConfigPartial {
-    pub api_key: String,
-
-    #[serde(default = "defaults::endpoint")]
-    pub endpoint: String,
-
-    #[serde(default = "defaults::model")]
-    pub model: String,
-
-    #[serde(default = "defaults::debounce_secs")]
-    pub debounce_secs: u64,
-
-    #[serde(default = "defaults::max_diff_lines")]
-    pub max_diff_lines: usize,
-    // #[serde(default = "defaults::line_delta_threshold")]
-    // pub line_delta_threshold: usize,
-    #[serde(default = "defaults::prompt")]
-    pub prompt: String,
-}
-
-impl From<SottoConfigPartial> for SottoConfig {
-    fn from(p: SottoConfigPartial) -> Self {
-        Self {
-            endpoint: p.endpoint,
-            model: p.model,
-            api_key: p.api_key,
-            debounce_secs: p.debounce_secs,
-            max_diff_lines: p.max_diff_lines,
-            prompt: p.prompt,
-        }
-    }
-}
-
 impl SottoConfig {
     /// Only call this from `setup` or `doctor`
     /// Daemon and completer should use `load_silent` instead.
@@ -127,10 +61,82 @@ impl SottoConfig {
     }
 }
 
+impl From<SottoConfigPartial> for SottoConfig {
+    fn from(p: SottoConfigPartial) -> Self {
+        Self {
+            endpoint: p.endpoint,
+            model: p.model,
+            api_key: p.api_key,
+            debounce_secs: p.debounce_secs,
+            max_diff_lines: p.max_diff_lines,
+            prompt: p.prompt,
+            inference_type: p.inference_type,
+        }
+    }
+}
+
+fn xdg_config_home() -> Option<PathBuf> {
+    env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+}
+
+fn xdg_data_home() -> Option<PathBuf> {
+    env::var("XDG_DATA_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+}
+
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub cache_dir: PathBuf,
+    pub socket: PathBuf,
+    pub log: PathBuf,
+    pub config: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SottoConfig {
+    pub endpoint: String,
+    pub model: String,
+    pub api_key: String,
+    pub debounce_secs: u64,
+    pub max_diff_lines: usize,
+    pub prompt: String,
+    pub inference_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SottoConfigPartial {
+    pub api_key: String,
+
+    #[serde(default = "defaults::endpoint")]
+    pub endpoint: String,
+
+    #[serde(default = "defaults::model")]
+    pub model: String,
+
+    #[serde(default = "defaults::debounce_secs")]
+    pub debounce_secs: u64,
+
+    #[serde(default = "defaults::max_diff_lines")]
+    pub max_diff_lines: usize,
+
+    #[serde(default = "defaults::prompt")]
+    pub prompt: String,
+
+    #[serde(default = "defaults::inference_type")]
+    pub inference_type: String,
+}
+
 pub const DEFAULT_PROMPT: &str = "You are a concise git commit message generator. \
     Given a diff, write a single-line commit message. \
     Use conventional commit format (feat:, fix:, refactor:, etc). \
     Return nothing but the commit message.";
+
+pub const DEFAULT_INFERENCE_TYPE: &str = "openrouter";
 
 mod defaults {
     pub fn endpoint() -> String {
@@ -148,6 +154,9 @@ mod defaults {
     pub fn prompt() -> String {
         super::DEFAULT_PROMPT.to_string()
     }
+    pub fn inference_type() -> String {
+        super::DEFAULT_INFERENCE_TYPE.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +172,7 @@ mod tests {
             debounce_secs: 10,
             max_diff_lines: 200,
             prompt: "Line one.\nLine two with \"quotes\" and \\backslash.".to_string(),
+            inference_type: "openrouter".to_string(),
         };
 
         let toml_str = config.to_toml().expect("serialization failed");
@@ -175,6 +185,7 @@ mod tests {
         assert_eq!(config.debounce_secs, roundtripped.debounce_secs);
         assert_eq!(config.max_diff_lines, roundtripped.max_diff_lines);
         assert_eq!(config.prompt, roundtripped.prompt);
+        assert_eq!(config.inference_type, roundtripped.inference_type);
     }
 
     #[test]
@@ -186,6 +197,7 @@ mod tests {
             debounce_secs: 5,
             max_diff_lines: 100,
             prompt: "First line\nSecond line\nThird \"quoted\" line".to_string(),
+            inference_type: "ollama".to_string(),
         };
 
         let toml_str = config.to_toml().expect("serialization failed");
