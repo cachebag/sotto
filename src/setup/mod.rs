@@ -1,7 +1,7 @@
 mod prompts;
 
 use anyhow::{Context, Result};
-use std::fs::{self};
+use std::fs;
 
 #[cfg(unix)]
 use std::io::Write;
@@ -9,7 +9,7 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::config::Paths;
+use crate::config::{Paths, SottoConfig};
 use crate::shell;
 
 pub fn run(paths: &Paths) -> Result<()> {
@@ -20,10 +20,11 @@ pub fn run(paths: &Paths) -> Result<()> {
         .context("couldn't detect your shell - set $SHELL or pass --shell")?;
     let tuning = prompts::tuning()?;
 
-    let config = build_config(&provider, tuning);
+    let config = build_config(provider, tuning);
+    let toml_str = config.to_toml()?;
 
     paths.init_dirs()?;
-    write_config(&paths.config, &config)?;
+    write_config(&paths.config, &toml_str)?;
 
     shell::inject(&shell, paths)?;
 
@@ -32,23 +33,15 @@ pub fn run(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-fn build_config(provider: &prompts::Provider, tuning: prompts::Tuning) -> String {
-    let escaped_prompt = tuning.prompt.replace('\\', "\\\\").replace('"', "\\\"");
-    format!(
-        r#"endpoint = "{}"
-model = "{}"
-api_key = "{}"
-debounce_secs = {}
-max_diff_lines = {}
-prompt = "{}"
-"#,
-        provider.endpoint,
-        provider.model,
-        provider.api_key,
-        tuning.debounce_secs,
-        tuning.max_diff_lines,
-        escaped_prompt,
-    )
+fn build_config(provider: prompts::Provider, tuning: prompts::Tuning) -> SottoConfig {
+    SottoConfig {
+        endpoint: provider.endpoint,
+        model: provider.model,
+        api_key: provider.api_key,
+        debounce_secs: tuning.debounce_secs,
+        max_diff_lines: tuning.max_diff_lines,
+        prompt: tuning.prompt,
+    }
 }
 
 fn write_config(path: &std::path::Path, config: &str) -> Result<()> {

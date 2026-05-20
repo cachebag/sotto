@@ -1,7 +1,7 @@
 // Configuration for sotto state
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{env, fs, path::PathBuf};
 
 fn xdg_config_home() -> Option<PathBuf> {
@@ -62,8 +62,18 @@ pub struct Paths {
     pub config: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SottoConfig {
+    pub endpoint: String,
+    pub model: String,
+    pub api_key: String,
+    pub debounce_secs: u64,
+    pub max_diff_lines: usize,
+    pub prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SottoConfigPartial {
     pub api_key: String,
 
     #[serde(default = "defaults::endpoint")]
@@ -83,18 +93,37 @@ pub struct SottoConfig {
     pub prompt: String,
 }
 
+impl From<SottoConfigPartial> for SottoConfig {
+    fn from(p: SottoConfigPartial) -> Self {
+        Self {
+            endpoint: p.endpoint,
+            model: p.model,
+            api_key: p.api_key,
+            debounce_secs: p.debounce_secs,
+            max_diff_lines: p.max_diff_lines,
+            prompt: p.prompt,
+        }
+    }
+}
+
 impl SottoConfig {
     /// Only call this from `setup` or `doctor`
     /// Daemon and completer should use `load_silent` instead.
     pub fn load(paths: &Paths) -> Result<Self> {
         let contents = fs::read_to_string(&paths.config).context("could not read config.toml")?;
-
-        toml::from_str(&contents).context("config.toml is malformed")
+        let partial: SottoConfigPartial =
+            toml::from_str(&contents).context("config.toml is malformed")?;
+        Ok(partial.into())
     }
 
     pub fn load_silently(paths: &Paths) -> Option<Self> {
         let contents = fs::read_to_string(&paths.config).ok()?;
-        toml::from_str(&contents).ok()
+        let partial: SottoConfigPartial = toml::from_str(&contents).ok()?;
+        Some(partial.into())
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(self).context("failed to serialize config")
     }
 }
 
@@ -116,12 +145,53 @@ mod defaults {
     pub fn max_diff_lines() -> usize {
         500
     }
-    // I don't know if this is needed right now
-    // But if token waste becomes an issue then it's worth it
-    // pub fn line_delta_threshold() -> usize {
-    //    10
-    // }
     pub fn prompt() -> String {
         super::DEFAULT_PROMPT.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_roundtrip_with_special_chars() {
+        let config = SottoConfig {
+            endpoint: "https://example.com/v1".to_string(),
+            model: "gpt-4".to_string(),
+            api_key: r#"sk-key"with"quotes"#.to_string(),
+            debounce_secs: 10,
+            max_diff_lines: 200,
+            prompt: "Line one.\nLine two with \"quotes\" and \\backslash.".to_string(),
+        };
+
+        let toml_str = config.to_toml().expect("serialization failed");
+        let parsed: SottoConfigPartial = toml::from_str(&toml_str).expect("deserialization failed");
+        let roundtripped: SottoConfig = parsed.into();
+
+        assert_eq!(config.endpoint, roundtripped.endpoint);
+        assert_eq!(config.model, roundtripped.model);
+        assert_eq!(config.api_key, roundtripped.api_key);
+        assert_eq!(config.debounce_secs, roundtripped.debounce_secs);
+        assert_eq!(config.max_diff_lines, roundtripped.max_diff_lines);
+        assert_eq!(config.prompt, roundtripped.prompt);
+    }
+
+    #[test]
+    fn config_roundtrip_multiline_prompt() {
+        let config = SottoConfig {
+            endpoint: "http://localhost:11434/api".to_string(),
+            model: "llama3".to_string(),
+            api_key: "".to_string(),
+            debounce_secs: 5,
+            max_diff_lines: 100,
+            prompt: "First line\nSecond line\nThird \"quoted\" line".to_string(),
+        };
+
+        let toml_str = config.to_toml().expect("serialization failed");
+        let parsed: SottoConfigPartial = toml::from_str(&toml_str).expect("deserialization failed");
+        let roundtripped: SottoConfig = parsed.into();
+
+        assert_eq!(config.prompt, roundtripped.prompt);
     }
 }
