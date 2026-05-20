@@ -11,9 +11,10 @@ use std::os::unix::fs::PermissionsExt;
 
 use crate::config::{Paths, SottoConfig};
 use crate::shell;
+use crate::ui;
 
 pub fn run(paths: &Paths) -> Result<()> {
-    println!("welcome to sotto.\n");
+    ui::header("welcome to sotto.");
 
     let provider = prompts::provider()?;
     let shell = prompts::detect_shell()
@@ -28,8 +29,8 @@ pub fn run(paths: &Paths) -> Result<()> {
 
     shell::inject(&shell, paths)?;
 
-    println!("\nyou are good to go and commit, but first, restart your shell or run:");
-    println!("  source ~/.{}rc", shell);
+    ui::done("you are good to go and commit, but first, restart your shell or run:");
+    ui::step(&format!("source ~/.{}rc", shell));
     Ok(())
 }
 
