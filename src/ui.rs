@@ -11,6 +11,9 @@ pub fn theme() -> ColorfulTheme {
 }
 
 pub fn select<T: ToString>(prompt: &str, items: &[T]) -> anyhow::Result<usize> {
+    if items.is_empty() {
+        anyhow::bail!("ui::select called with no items for prompt {prompt:?}");
+    }
     let string_items: Vec<String> = items.iter().map(|i| i.to_string()).collect();
     let choice = Select::with_theme(&theme())
         .with_prompt(prompt)

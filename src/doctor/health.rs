@@ -54,19 +54,25 @@ pub fn generate_report(locations: Vec<String>, config: Vec<String>) {
 }
 
 fn truncate(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
-        s.to_string()
-    } else {
-        format!("{}...", s.chars().take(max_width - 3).collect::<String>())
+    let char_count = s.chars().count();
+    if char_count <= max_width {
+        return s.to_string();
     }
+    if max_width <= 3 {
+        return s.chars().take(max_width).collect();
+    }
+    format!("{}...", s.chars().take(max_width - 3).collect::<String>())
 }
 
 fn mask_secret(s: &str) -> String {
-    if s.is_empty() {
-        String::new()
-    } else if s.len() <= 8 {
-        "*".repeat(s.len())
-    } else {
-        format!("{}...{}", &s[..4], &s[s.len() - 4..])
+    let char_count = s.chars().count();
+    if char_count == 0 {
+        return String::new();
     }
+    if char_count <= 8 {
+        return "*".repeat(char_count);
+    }
+    let prefix: String = s.chars().take(4).collect();
+    let suffix: String = s.chars().skip(char_count - 4).collect();
+    format!("{prefix}...{suffix}")
 }
